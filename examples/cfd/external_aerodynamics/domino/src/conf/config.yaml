@@ -121,7 +121,7 @@ train: # Training configurable parameters
   sampler:
     shuffle: true
     drop_last: false
-  checkpoint_dir: /lustre/rranade/modulus_dev/modulus_forked/modulus/examples/cfd/external_aerodynamics/domino/outputs/AWS_Dataset/3/models/
+  checkpoint_dir: /lustre/rranade/physicsnemo_dev/physicsnemo_forked/physicsnemo/examples/cfd/external_aerodynamics/domino/outputs/AWS_Dataset/3/models/
   
 val: # Validation configurable parameters
   dataloader:
