@@ -264,8 +264,7 @@ class GeometryRep(nn.Module):
     def __init__(self, input_features, radii, model_parameters=None):
         super().__init__()
         geometry_rep = model_parameters.geometry_rep
-        # radii = geometry_rep.geo_conv.radii
-        # num_scales = len(radii)
+        self.geo_encoding_type = model_parameters.geometry_encoding_type
 
         self.bq_warp = nn.ModuleList()
         self.geo_processors = nn.ModuleList()
@@ -302,35 +301,41 @@ class GeometryRep(nn.Module):
         self.hops = geometry_rep.geo_conv.hops
 
     def forward(self, x, p_grid, sdf):
+        
+        if self.geo_encoding_type == "both" or self.geo_encoding_type == "stl":
+            # Calculate multi-scale geoemtry dependency
+            x_encoding = []
+            for j, p in enumerate(self.radii):
+                mapping, k_short = self.bq_warp[j](x, p_grid)
+                x_encoding_inter = self.geo_conv_out[j](k_short)
+                # Propagate information in the geometry enclosed BBox
+                for _ in range(self.hops):
+                    dx = self.geo_processors[j](x_encoding_inter) / self.hops
+                    x_encoding_inter = x_encoding_inter + dx
+                x_encoding.append(x_encoding_inter)
+            x_encoding = torch.cat(x_encoding, axis=1)
 
-        # Expand SDF
-        sdf = torch.unsqueeze(sdf, 1)
+        if self.geo_encoding_type == "both" or self.geo_encoding_type == "sdf":
+            # Expand SDF
+            sdf = torch.unsqueeze(sdf, 1)
+            # Scaled sdf to emphasis on surface
+            scaled_sdf = scale_sdf(sdf)
+            # Binary sdf
+            binary_sdf = binarize_sdf(sdf)
+            # Gradients of SDF
+            sdf_x, sdf_y, sdf_z = calculate_gradient(sdf)
 
-        # Calculate multi-scale geoemtry dependency
-        x_encoding = []
-        for j, p in enumerate(self.radii):
-            mapping, k_short = self.bq_warp[j](x, p_grid)
-            x_encoding_inter = self.geo_conv_out[j](k_short)
-            # Propagate information in the geometry enclosed BBox
-            for _ in range(self.hops):
-                dx = self.geo_processors[j](x_encoding_inter) / self.hops
-                x_encoding_inter = x_encoding_inter + dx
-            x_encoding.append(x_encoding_inter)
+            # Process SDF and its computed features
+            sdf = torch.cat((sdf, scaled_sdf, binary_sdf, sdf_x, sdf_y, sdf_z), 1)
+            sdf_encoding = self.geo_processor_sdf(sdf)
 
-        # Scaled sdf to emphasis on surface
-        scaled_sdf = scale_sdf(sdf)
-        # Binary sdf
-        binary_sdf = binarize_sdf(sdf)
-        # Gradients of SDF
-        sdf_x, sdf_y, sdf_z = calculate_gradient(sdf)
-
-        # Process SDF and its computed features
-        sdf = torch.cat((sdf, scaled_sdf, binary_sdf, sdf_x, sdf_y, sdf_z), 1)
-        sdf_encoding = self.geo_processor_sdf(sdf)
-
-        # Geometry encoding comprised of short-range, long-range and SDF features
-        x_encoding = torch.cat(x_encoding, axis=1)
-        encoding_g = torch.cat((x_encoding, sdf_encoding), 1)
+        if self.geo_encoding_type == "both":
+            # Geometry encoding comprised of short-range, long-range and SDF features
+            encoding_g = torch.cat((x_encoding, sdf_encoding), 1)
+        elif self.geo_encoding_type == "sdf":
+            encoding_g = sdf_encoding
+        elif self.geo_encoding_type == "stl":
+            encoding_g = x_encoding
 
         return encoding_g
 
@@ -570,6 +575,7 @@ class DoMINO(nn.Module):
         self.use_surface_area = model_parameters.use_surface_area
         self.encode_parameters = model_parameters.encode_parameters
         self.param_scaling_factors = model_parameters.parameter_model.scaling_params
+        self.geo_encoding_type = model_parameters.geometry_encoding_type
 
         if self.use_surface_normals:
             if not self.use_surface_area:
@@ -631,6 +637,7 @@ class DoMINO(nn.Module):
         # Positional encoding
         position_encoder_base_neurons = model_parameters.position_encoder.base_neurons
         self.activation = F.relu
+        self.use_sdf_in_basis_func = model_parameters.use_sdf_in_basis_func
         if self.output_features_vol is not None:
             if model_parameters.positional_encoding:
                 inp_pos_vol = 25 if model_parameters.use_sdf_in_basis_func else 12
@@ -662,10 +669,19 @@ class DoMINO(nn.Module):
         self.surface_radius = model_parameters.geometry_local.surface_radii
         self.surface_bq_warp = nn.ModuleList()
         self.surface_local_point_conv = nn.ModuleList()
+
         for ct, j in enumerate(self.surface_radius):
-            total_neighbors_in_radius = self.surface_neighbors_in_radius[ct] * (
-                len(model_parameters.geometry_rep.geo_conv.surface_radii) + 1
-            )
+            if self.geo_encoding_type == "both":
+                total_neighbors_in_radius = self.surface_neighbors_in_radius[ct] * (
+                    len(model_parameters.geometry_rep.geo_conv.surface_radii) + 1
+                )
+            elif self.geo_encoding_type == "stl":
+                total_neighbors_in_radius = self.surface_neighbors_in_radius[ct] * (
+                    len(model_parameters.geometry_rep.geo_conv.surface_radii)
+                )
+            elif self.geo_encoding_type == "sdf":
+                total_neighbors_in_radius = self.surface_neighbors_in_radius[ct]
+
             self.surface_bq_warp.append(
                 BQWarp(
                     input_features=input_features,
@@ -682,16 +698,24 @@ class DoMINO(nn.Module):
                 )
             )
             
-
         # BQ for volume
         self.volume_neighbors_in_radius = model_parameters.geometry_local.volume_neighbors_in_radius
         self.volume_radius = model_parameters.geometry_local.volume_radii
         self.volume_bq_warp = nn.ModuleList()
         self.volume_local_point_conv = nn.ModuleList()
+
         for ct, j in enumerate(self.volume_radius):
-            total_neighbors_in_radius = self.volume_neighbors_in_radius[ct] * (
-                len(model_parameters.geometry_rep.geo_conv.volume_radii) + 1
-            )
+            if self.geo_encoding_type == "both":
+                total_neighbors_in_radius = self.volume_neighbors_in_radius[ct] * (
+                    len(model_parameters.geometry_rep.geo_conv.volume_radii) + 1
+                )
+            elif self.geo_encoding_type == "stl":
+                total_neighbors_in_radius = self.volume_neighbors_in_radius[ct] * (
+                    len(model_parameters.geometry_rep.geo_conv.volume_radii)
+                )
+            elif self.geo_encoding_type == "sdf":
+                total_neighbors_in_radius = self.volume_neighbors_in_radius[ct]
+            
             self.volume_bq_warp.append(
                 BQWarp(
                     input_features=input_features,
@@ -715,17 +739,6 @@ class DoMINO(nn.Module):
         self.surf_to_vol_conv2 = nn.Conv3d(
             16, len(model_parameters.geometry_rep.geo_conv.volume_radii)+1, kernel_size=3, padding="same"
         )
-
-        
-        # total_neighbors_in_radius = 0
-        # for ct, j in enumerate(self.radius):
-        #     total_neighbors_in_radius += self.neighbors_in_radius[ct]
-        # total_neighbors_in_radius = total_neighbors_in_radius * (
-        #     len(model_parameters.geometry_rep.geo_conv.radii) + 1
-        # )
-
-        # self.fc_1 = nn.Linear(total_neighbors_in_radius, base_layer_geo)
-        # self.fc_2 = nn.Linear(base_layer_geo, base_layer_geo)
 
         # Aggregation model
         if self.output_features_surf is not None:
@@ -1057,9 +1070,12 @@ class DoMINO(nn.Module):
             pos_volume_closest = data_dict["pos_volume_closest"]
             # Positional encoding based on center of mass of geometry to volume node
             pos_volume_center_of_mass = data_dict["pos_volume_center_of_mass"]
-            encoding_node_vol = torch.cat(
-                (sdf_nodes, pos_volume_closest, pos_volume_center_of_mass), axis=-1
-            )
+            if self.use_sdf_in_basis_func:
+                encoding_node_vol = torch.cat(
+                    (sdf_nodes, pos_volume_closest, pos_volume_center_of_mass), axis=-1
+                )
+            else:
+                encoding_node_vol = pos_volume_center_of_mass
 
             # Calculate positional encoding on volume nodes
             encoding_node_vol = self.position_encoder(
@@ -1081,11 +1097,6 @@ class DoMINO(nn.Module):
             encoding_node_surf = self.position_encoder(
                 encoding_node_surf, eval_mode="surface"
             )
-
-        # encoding_g = 0.5 * encoding_g_surf
-        # # # Average the encodings
-        # if self.output_features_vol is not None:
-        #     encoding_g += 0.5 * encoding_g_vol
 
         if self.output_features_vol is not None:
             # Calculate local geometry encoding for volume

@@ -164,9 +164,9 @@ def relative_loss_fn_surface(output, target, normals, padded_value=-10):
     return loss
 
 
-def relative_loss_fn_area(output, target, normals, area, padded_value=-10):
+def relative_loss_fn_area(output, target, normals, area, area_scaling_factor, padded_value=-10):
     scale_factor = 1.0  # Get this from the dataset
-    area = area * 10**4
+    area = area * area_scaling_factor
     ws_pred = torch.sqrt(
         output[:, :, 1:2] ** 2.0 + output[:, :, 2:3] ** 2.0 + output[:, :, 3:4] ** 2.0
     )
@@ -230,9 +230,9 @@ def relative_loss_fn_area(output, target, normals, area, padded_value=-10):
     return loss
 
 
-def mse_loss_fn_area(output, target, normals, area, padded_value=-10):
+def mse_loss_fn_area(output, target, normals, area, area_scaling_factor, padded_value=-10):
     scale_factor = 1.0  # Get this from the dataset
-    area = area * 10**4
+    area = area * area_scaling_factor
     ws_pred = torch.sqrt(
         output[:, :, 1:2] ** 2.0 + output[:, :, 2:3] ** 2.0 + output[:, :, 3:4] ** 2.0
     )
@@ -373,7 +373,7 @@ def validation_step(
     use_sdf_basis=False,
     use_surface_normals=False,
     integral_scaling_factor=1.0,
-    loss_fn_type="mse",
+    loss_fn_type=None,
     vol_loss_scaling=None,
     surf_loss_scaling=None,
 ):
@@ -388,7 +388,7 @@ def validation_step(
 
                 if prediction_vol is not None:
                     target_vol = sampled_batched["volume_fields"]
-                    if loss_fn_type == "rmse":
+                    if loss_fn_type.loss_type == "rmse":
                         loss_norm_vol = relative_loss_fn(
                             prediction_vol, target_vol, padded_value=-10
                         )
@@ -401,7 +401,7 @@ def validation_step(
                     target_surf = sampled_batched["surface_fields"]
                     surface_normals = sampled_batched["surface_normals"]
                     surface_areas = sampled_batched["surface_areas"]
-                    if loss_fn_type == "rmse":
+                    if loss_fn_type.loss_type == "rmse":
                         loss_norm_surf = relative_loss_fn_surface(
                             prediction_surf, target_surf, surface_normals, padded_value=-10
                         )
@@ -410,6 +410,7 @@ def validation_step(
                             target_surf,
                             surface_normals,
                             surface_areas,
+                            area_scaling_factor=loss_fn_type.area_weighing_factor,
                             padded_value=-10,
                         )
                     else:
@@ -421,6 +422,7 @@ def validation_step(
                             target_surf,
                             surface_normals,
                             surface_areas,
+                            area_scaling_factor=loss_fn_type.area_weighing_factor,
                             padded_value=-10,
                         ) * surf_loss_scaling
                     loss_integral = (
@@ -478,7 +480,7 @@ def train_epoch(
 
             if prediction_vol is not None:
                 target_vol = sampled_batched["volume_fields"]
-                if loss_fn_type == "rmse":
+                if loss_fn_type.loss_type == "rmse":
                     loss_norm_vol = relative_loss_fn(
                         prediction_vol, target_vol, padded_value=-10
                     )
@@ -492,7 +494,7 @@ def train_epoch(
                 target_surf = sampled_batched["surface_fields"]
                 surface_areas = sampled_batched["surface_areas"]
                 surface_normals = sampled_batched["surface_normals"]
-                if loss_fn_type == "rmse":
+                if loss_fn_type.loss_type == "rmse":
                     loss_norm_surf = relative_loss_fn_surface(
                         prediction_surf, target_surf, surface_normals, padded_value=-10
                     )
@@ -501,6 +503,7 @@ def train_epoch(
                         target_surf,
                         surface_normals,
                         surface_areas,
+                        area_scaling_factor=loss_fn_type.area_weighing_factor,
                         padded_value=-10,
                     )
                 else:
@@ -512,6 +515,7 @@ def train_epoch(
                         target_surf,
                         surface_normals,
                         surface_areas,
+                        area_scaling_factor=loss_fn_type.area_weighing_factor,
                         padded_value=-10,
                     ) * surf_loss_scaling
                 loss_integral = (
@@ -848,6 +852,9 @@ def main(cfg: DictConfig) -> None:
         bounding_box_dims=cfg.data.bounding_box,
         bounding_box_dims_surf=cfg.data.bounding_box_surface,
         num_surface_neighbors=cfg.model.num_surface_neighbors,
+        resample_surfaces=cfg.model.resampling_surface_mesh.resample,
+        resampling_points=cfg.model.resampling_surface_mesh.points,
+        surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
     )
 
     val_dataset = DoMINODataPipe(
@@ -870,6 +877,9 @@ def main(cfg: DictConfig) -> None:
         bounding_box_dims=cfg.data.bounding_box,
         bounding_box_dims_surf=cfg.data.bounding_box_surface,
         num_surface_neighbors=cfg.model.num_surface_neighbors,
+        resample_surfaces=cfg.model.resampling_surface_mesh.resample,
+        resampling_points=cfg.model.resampling_surface_mesh.points,
+        surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
     )
 
     train_sampler = DistributedSampler(
@@ -916,7 +926,7 @@ def main(cfg: DictConfig) -> None:
     # optimizer = apex.optimizers.FusedAdam(model.parameters(), lr=0.001)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[50, 100, 150, 200, 250, 300, 350, 400], gamma=0.5
+        optimizer, milestones=[100, 200, 300, 400, 500, 600, 700, 800], gamma=0.5
     )
 
     # Initialize the scaler for mixed precision
@@ -973,7 +983,7 @@ def main(cfg: DictConfig) -> None:
         initial_integral_factor = initial_integral_factor_orig
 
         if epoch > 250:
-            surface_scaling_loss = 2 * cfg.model.surf_loss_scaling
+            surface_scaling_loss = 1.0 * cfg.model.surf_loss_scaling
         else:
             surface_scaling_loss = cfg.model.surf_loss_scaling
 

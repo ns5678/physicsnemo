@@ -89,8 +89,11 @@ class DoMINODataPipe(Dataset):
         model_type=None,  # Model_type, surface, volume or combined
         bounding_box_dims=None,  # Dimensions of bounding box
         bounding_box_dims_surf=None,  # Dimensions of bounding box
-        compute_scaling_factors=False,
+        compute_scaling_factors=False, # Are you computing scaling factors?
         num_surface_neighbors=11,  # Surface neighbors to consider
+        resample_surfaces=False, # resample surfaces before kdtree
+        resampling_points=1_000_000, # number of points to resample,
+        surface_sampling_algorithm="area_weighted",
     ):
         if isinstance(data_path, str):
             data_path = Path(data_path)
@@ -150,6 +153,9 @@ class DoMINODataPipe(Dataset):
         self.scaling_type = scaling_type
         self.compute_scaling_factors = compute_scaling_factors
         self.num_surface_neighbors = num_surface_neighbors
+        self.resample_surfaces = resample_surfaces
+        self.resampling_points = resampling_points
+        self.surface_sampling_algorithm = surface_sampling_algorithm
 
     def __len__(self):
         return len(self.indices)
@@ -189,22 +195,27 @@ class DoMINODataPipe(Dataset):
 
         nx, ny, nz = self.grid_resolution
 
-        surf_grid = create_grid(s_max, s_min, [nx, ny, nz])
-        surf_grid_reshaped = surf_grid.reshape(nx * ny * nz, 3)
+        if not self.compute_scaling_factors:
+            surf_grid = create_grid(s_max, s_min, [nx, ny, nz])
+            surf_grid_reshaped = surf_grid.reshape(nx * ny * nz, 3)
 
-        # SDF calculation on the grid using WARP
-        sdf_surf_grid = (
-            signed_distance_field(
-                stl_vertices,
-                mesh_indices_flattened,
-                surf_grid_reshaped,
-                use_sign_winding_number=True,
+            # SDF calculation on the grid using WARP
+            sdf_surf_grid = (
+                signed_distance_field(
+                    stl_vertices,
+                    mesh_indices_flattened,
+                    surf_grid_reshaped,
+                    use_sign_winding_number=True,
+                )
+                .numpy()
+                .reshape(nx, ny, nz)
             )
-            .numpy()
-            .reshape(nx, ny, nz)
-        )
-        surf_grid = np.float32(surf_grid)
-        sdf_surf_grid = np.float32(sdf_surf_grid)
+            surf_grid = np.float32(surf_grid)
+            sdf_surf_grid = np.float32(sdf_surf_grid)
+        else:
+            surf_grid = None
+            sdf_surf_grid = None
+            
         surf_grid_max_min = np.float32(np.asarray([s_min, s_max]))
 
         if self.model_type == "volume" or self.model_type == "combined":
@@ -352,6 +363,21 @@ class DoMINODataPipe(Dataset):
             surface_sizes = data_dict["surface_areas"]
             surface_fields = data_dict["surface_fields"]
 
+            if self.resample_surfaces:
+                # print("Before sampling:", surface_coordinates.shape)
+                if self.resampling_points > surface_coordinates.shape[0]:
+                    resampling_points = self.surface_coordinates.shape[0]
+                else:
+                    resampling_points = self.resampling_points
+                surface_coordinates_sampled, idx_s = shuffle_array(
+                        surface_coordinates, resampling_points
+                    )
+                surface_coordinates = surface_coordinates_sampled
+                surface_normals = surface_normals[idx_s]
+                surface_sizes = surface_sizes[idx_s]
+                surface_fields = surface_fields[idx_s]
+                # print("After sampling:", surface_coordinates.shape)
+
             if not self.compute_scaling_factors:
 
                 c_max = np.float32(self.bounding_box_dims[0])
@@ -404,12 +430,18 @@ class DoMINODataPipe(Dataset):
                     surf_grid = normalize(surf_grid, s_max, s_min)
 
                 if self.sampling:
-                    (
-                        surface_coordinates_sampled,
-                        idx_surface,
-                    ) = area_weighted_shuffle_array(
-                        surface_coordinates, self.surface_points, surface_sizes
-                    )
+                    if self.surface_sampling_algorithm == "area_weighted":
+                        (
+                            surface_coordinates_sampled,
+                            idx_surface,
+                        ) = area_weighted_shuffle_array(
+                            surface_coordinates, self.surface_points, surface_sizes
+                        )
+                    else:
+                        surface_coordinates_sampled, idx_surface = shuffle_array(
+                            surface_coordinates, self.surface_points
+                        )
+                    
                     if surface_coordinates_sampled.shape[0] < self.surface_points:
                         surface_coordinates_sampled = pad(
                             surface_coordinates_sampled,
