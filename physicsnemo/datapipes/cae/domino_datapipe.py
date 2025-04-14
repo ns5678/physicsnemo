@@ -96,8 +96,16 @@ class DoMINODataPipe(Dataset):
         model_type=None,  # Model_type, surface, volume or combined
         bounding_box_dims=None,  # Dimensions of bounding box
         bounding_box_dims_surf=None,  # Dimensions of bounding box
+<<<<<<< HEAD
         compute_scaling_factors=False,
         num_surface_neighbors=11,  # Surface neighbors to consider
+=======
+        compute_scaling_factors=False, # Are you computing scaling factors?
+        num_surface_neighbors=11,  # Surface neighbors to consider
+        resample_surfaces=False, # resample surfaces before kdtree
+        resampling_points=1_000_000, # number of points to resample,
+        surface_sampling_algorithm="area_weighted", # area_weighted or random
+>>>>>>> RishikeshRanade-enh-domino-multiscale
         for_caching=False,
         deterministic_seed=False,
     ):
@@ -112,6 +120,13 @@ class DoMINODataPipe(Dataset):
                 raise AssertionError(
                     "Compute scaling factors should be False for caching"
                 )
+<<<<<<< HEAD
+=======
+            if resample_surfaces:
+                raise AssertionError(
+                    "Resample surface should be False for caching"
+                )
+>>>>>>> RishikeshRanade-enh-domino-multiscale
 
         if deterministic_seed:
             np.random.seed(42)
@@ -172,6 +187,12 @@ class DoMINODataPipe(Dataset):
         self.scaling_type = scaling_type
         self.compute_scaling_factors = compute_scaling_factors
         self.num_surface_neighbors = num_surface_neighbors
+<<<<<<< HEAD
+=======
+        self.resample_surfaces = resample_surfaces
+        self.resampling_points = resampling_points
+        self.surface_sampling_algorithm = surface_sampling_algorithm
+>>>>>>> RishikeshRanade-enh-domino-multiscale
         self.deterministic_seed = deterministic_seed
 
     def __len__(self):
@@ -218,6 +239,7 @@ class DoMINODataPipe(Dataset):
 
         nx, ny, nz = self.grid_resolution
 
+<<<<<<< HEAD
         nvtx.range_push("Surface SDF")
         surf_grid = create_grid(s_max, s_min, [nx, ny, nz])
         surf_grid_reshaped = surf_grid.reshape(nx * ny * nz, 3)
@@ -235,6 +257,30 @@ class DoMINODataPipe(Dataset):
         )
         surf_grid = np.float32(surf_grid)
         sdf_surf_grid = np.float32(sdf_surf_grid)
+=======
+        if not self.compute_scaling_factors:
+            nvtx.range_push("Surface SDF")
+            surf_grid = create_grid(s_max, s_min, [nx, ny, nz])
+            surf_grid_reshaped = surf_grid.reshape(nx * ny * nz, 3)
+
+            # SDF calculation on the grid using WARP
+            sdf_surf_grid = (
+                signed_distance_field(
+                    stl_vertices,
+                    mesh_indices_flattened,
+                    surf_grid_reshaped,
+                    use_sign_winding_number=True,
+                )
+                .numpy()
+                .reshape(nx, ny, nz)
+            )
+            surf_grid = np.float32(surf_grid)
+            sdf_surf_grid = np.float32(sdf_surf_grid)
+        else:
+            surf_grid = None
+            sdf_surf_grid = None
+            
+>>>>>>> RishikeshRanade-enh-domino-multiscale
         surf_grid_max_min = np.float32(np.asarray([s_min, s_max]))
         nvtx.range_pop()
 
@@ -376,6 +422,24 @@ class DoMINODataPipe(Dataset):
             surface_sizes = data_dict["surface_areas"]
             surface_fields = data_dict["surface_fields"]
 
+<<<<<<< HEAD
+=======
+            if self.resample_surfaces:
+                # print("Before sampling:", surface_coordinates.shape)
+                if self.resampling_points > surface_coordinates.shape[0]:
+                    resampling_points = self.surface_coordinates.shape[0]
+                else:
+                    resampling_points = self.resampling_points
+                surface_coordinates_sampled, idx_s = shuffle_array(
+                        surface_coordinates, resampling_points
+                    )
+                surface_coordinates = surface_coordinates_sampled
+                surface_normals = surface_normals[idx_s]
+                surface_sizes = surface_sizes[idx_s]
+                surface_fields = surface_fields[idx_s]
+                # print("After sampling:", surface_coordinates.shape)
+
+>>>>>>> RishikeshRanade-enh-domino-multiscale
             if not self.compute_scaling_factors:
 
                 c_max = np.float32(self.bounding_box_dims[0])
@@ -389,10 +453,18 @@ class DoMINODataPipe(Dataset):
                     & (surface_coordinates[:, 2] > c_min[2])
                     & (surface_coordinates[:, 2] < c_max[2])
                 )
+<<<<<<< HEAD
                 surface_coordinates = surface_coordinates[ids_in_bbox]
                 surface_normals = surface_normals[ids_in_bbox]
                 surface_sizes = surface_sizes[ids_in_bbox]
                 surface_fields = surface_fields[ids_in_bbox]
+=======
+                if self.sample_in_bbox:
+                    surface_coordinates = surface_coordinates[ids_in_bbox]
+                    surface_normals = surface_normals[ids_in_bbox]
+                    surface_sizes = surface_sizes[ids_in_bbox]
+                    surface_fields = surface_fields[ids_in_bbox]
+>>>>>>> RishikeshRanade-enh-domino-multiscale
 
                 # Get neighbors
                 nvtx.range_push("Get Neighbors")
@@ -426,12 +498,27 @@ class DoMINODataPipe(Dataset):
 
                 if self.sampling:
                     nvtx.range_push("Surface Sampling")
+<<<<<<< HEAD
                     (
                         surface_coordinates_sampled,
                         idx_surface,
                     ) = area_weighted_shuffle_array(
                         surface_coordinates, self.surface_points, surface_sizes
                     )
+=======
+                    if self.surface_sampling_algorithm == "area_weighted":
+                        (
+                            surface_coordinates_sampled,
+                            idx_surface,
+                        ) = area_weighted_shuffle_array(
+                            surface_coordinates, self.surface_points, surface_sizes
+                        )
+                    else:
+                        surface_coordinates_sampled, idx_surface = shuffle_array(
+                            surface_coordinates, self.surface_points
+                        )
+                    
+>>>>>>> RishikeshRanade-enh-domino-multiscale
                     if surface_coordinates_sampled.shape[0] < self.surface_points:
                         surface_coordinates_sampled = pad(
                             surface_coordinates_sampled,
@@ -494,7 +581,11 @@ class DoMINODataPipe(Dataset):
             nvtx.range_push("Geometry Sampling")
             geometry_points = self.geom_points_sample
             geometry_coordinates_sampled, idx_geometry = shuffle_array(
+<<<<<<< HEAD
                 stl_vertices, geometry_points
+=======
+                stl_centers, geometry_points
+>>>>>>> RishikeshRanade-enh-domino-multiscale
             )
             if geometry_coordinates_sampled.shape[0] < geometry_points:
                 geometry_coordinates_sampled = pad(
@@ -503,7 +594,11 @@ class DoMINODataPipe(Dataset):
             geom_centers = geometry_coordinates_sampled
             nvtx.range_pop()
         else:
+<<<<<<< HEAD
             geom_centers = stl_vertices
+=======
+            geom_centers = stl_centers
+>>>>>>> RishikeshRanade-enh-domino-multiscale
 
         geom_centers = np.float32(geom_centers)
 
@@ -588,6 +683,10 @@ class CachedDoMINODataset(Dataset):
         geom_points_sample: Optional[int] = None,
         model_type=None,  # Model_type, surface, volume or combined
         deterministic_seed=False,
+<<<<<<< HEAD
+=======
+        surface_sampling_algorithm="area_weighted",
+>>>>>>> RishikeshRanade-enh-domino-multiscale
     ):
         super().__init__()
 
@@ -609,6 +708,10 @@ class CachedDoMINODataset(Dataset):
         self.volume_points = volume_points_sample
         self.surface_points = surface_points_sample
         self.geom_points = geom_points_sample
+<<<<<<< HEAD
+=======
+        self.surface_sampling_algorithm = surface_sampling_algorithm
+>>>>>>> RishikeshRanade-enh-domino-multiscale
 
         self.filenames = get_filenames(self.data_path, exclude_dirs=True)
 
@@ -668,11 +771,25 @@ class CachedDoMINODataset(Dataset):
 
         # Sample surface points if present
         if "surface_mesh_centers" in result and self.surface_points:
+<<<<<<< HEAD
             coords_sampled, idx_surface = area_weighted_shuffle_array(
                 result["surface_mesh_centers"],
                 self.surface_points,
                 result["surface_areas"],
             )
+=======
+            if self.surface_sampling_algorithm == "area_weighted":
+                coords_sampled, idx_surface = area_weighted_shuffle_array(
+                    result["surface_mesh_centers"],
+                    self.surface_points,
+                    result["surface_areas"],
+                )
+            else:
+                coords_sampled, idx_surface = shuffle_array(
+                    result["surface_mesh_centers"], self.surface_points
+                )
+            
+>>>>>>> RishikeshRanade-enh-domino-multiscale
             if coords_sampled.shape[0] < self.surface_points:
                 coords_sampled = pad(
                     coords_sampled, self.surface_points, pad_value=-10.0
@@ -925,6 +1042,10 @@ def create_domino_dataset(
             surface_points_sample=cfg.model.surface_points_sample,
             geom_points_sample=cfg.model.geom_points_sample,
             model_type=cfg.model.model_type,
+<<<<<<< HEAD
+=======
+            surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+>>>>>>> RishikeshRanade-enh-domino-multiscale
         )
     else:
         return DoMINODataPipe(
@@ -947,6 +1068,12 @@ def create_domino_dataset(
             bounding_box_dims=cfg.data.bounding_box,
             bounding_box_dims_surf=cfg.data.bounding_box_surface,
             num_surface_neighbors=cfg.model.num_surface_neighbors,
+<<<<<<< HEAD
+=======
+            resample_surfaces=cfg.model.resampling_surface_mesh.resample,
+            resampling_points=cfg.model.resampling_surface_mesh.points,
+            surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+>>>>>>> RishikeshRanade-enh-domino-multiscale
         )
 
 

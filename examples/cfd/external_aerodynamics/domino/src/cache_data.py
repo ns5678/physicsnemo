@@ -86,6 +86,7 @@ def main(cfg: DictConfig) -> None:
         bounding_box_dims=cfg.data.bounding_box,
         bounding_box_dims_surf=cfg.data.bounding_box_surface,
         num_surface_neighbors=cfg.model.num_surface_neighbors,
+        resample_surfaces=False,
         for_caching=True,
         deterministic_seed=True,
     )
