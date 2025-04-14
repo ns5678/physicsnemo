@@ -100,7 +100,7 @@ class DoMINODataPipe(Dataset):
         num_surface_neighbors=11,  # Surface neighbors to consider
         resample_surfaces=False, # resample surfaces before kdtree
         resampling_points=1_000_000, # number of points to resample,
-        surface_sampling_algorithm="area_weighted",
+        surface_sampling_algorithm="area_weighted", # area_weighted or random
         for_caching=False,
         deterministic_seed=False,
     ):
@@ -114,6 +114,10 @@ class DoMINODataPipe(Dataset):
             if compute_scaling_factors:
                 raise AssertionError(
                     "Compute scaling factors should be False for caching"
+                )
+            if resample_surfaces:
+                raise AssertionError(
+                    "Resample surface should be False for caching"
                 )
 
         if deterministic_seed:
@@ -275,15 +279,6 @@ class DoMINODataPipe(Dataset):
                     volume_coordinates = volume_coordinates[ids_in_bbox]
                     volume_fields = volume_fields[ids_in_bbox]
 
-                # volume_fields[:, :3] = volume_fields[:, :3] / STREAM_VELOCITY
-                # volume_fields[:, 3:4] = volume_fields[:, 3:4] / (
-                #     AIR_DENSITY * STREAM_VELOCITY**2.0
-                # )
-
-                # volume_fields[:, 4:] = volume_fields[:, 4:] / (
-                #     STREAM_VELOCITY * length_scale
-                # )
-
                 dx, dy, dz = (
                     (c_max[0] - c_min[0]) / nx,
                     (c_max[1] - c_min[1]) / ny,
@@ -429,7 +424,6 @@ class DoMINODataPipe(Dataset):
                     surface_normals = surface_normals[ids_in_bbox]
                     surface_sizes = surface_sizes[ids_in_bbox]
                     surface_fields = surface_fields[ids_in_bbox]
-                # surface_fields = surface_fields / (AIR_DENSITY * STREAM_VELOCITY**2.0)
 
                 # Get neighbors
                 nvtx.range_push("Get Neighbors")
@@ -631,6 +625,7 @@ class CachedDoMINODataset(Dataset):
         geom_points_sample: Optional[int] = None,
         model_type=None,  # Model_type, surface, volume or combined
         deterministic_seed=False,
+        surface_sampling_algorithm="area_weighted",
     ):
         super().__init__()
 
@@ -652,6 +647,7 @@ class CachedDoMINODataset(Dataset):
         self.volume_points = volume_points_sample
         self.surface_points = surface_points_sample
         self.geom_points = geom_points_sample
+        self.surface_sampling_algorithm = surface_sampling_algorithm
 
         self.filenames = get_filenames(self.data_path, exclude_dirs=True)
 
@@ -711,11 +707,17 @@ class CachedDoMINODataset(Dataset):
 
         # Sample surface points if present
         if "surface_mesh_centers" in result and self.surface_points:
-            coords_sampled, idx_surface = area_weighted_shuffle_array(
-                result["surface_mesh_centers"],
-                self.surface_points,
-                result["surface_areas"],
-            )
+            if self.surface_sampling_algorithm == "area_weighted":
+                coords_sampled, idx_surface = area_weighted_shuffle_array(
+                    result["surface_mesh_centers"],
+                    self.surface_points,
+                    result["surface_areas"],
+                )
+            else:
+                coords_sampled, idx_surface = shuffle_array(
+                    result["surface_mesh_centers"], self.surface_points
+                )
+            
             if coords_sampled.shape[0] < self.surface_points:
                 coords_sampled = pad(
                     coords_sampled, self.surface_points, pad_value=-10.0
@@ -968,6 +970,7 @@ def create_domino_dataset(
             surface_points_sample=cfg.model.surface_points_sample,
             geom_points_sample=cfg.model.geom_points_sample,
             model_type=cfg.model.model_type,
+            surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
         )
     else:
         return DoMINODataPipe(
@@ -990,6 +993,9 @@ def create_domino_dataset(
             bounding_box_dims=cfg.data.bounding_box,
             bounding_box_dims_surf=cfg.data.bounding_box_surface,
             num_surface_neighbors=cfg.model.num_surface_neighbors,
+            resample_surfaces=cfg.model.resampling_surface_mesh.resample,
+            resampling_points=cfg.model.resampling_surface_mesh.points,
+            surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
         )
 
 
