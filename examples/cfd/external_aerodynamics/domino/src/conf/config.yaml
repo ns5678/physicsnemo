@@ -19,6 +19,7 @@ project: # Project name
   
 exp_tag: 1 # Experiment tag
 # Main output directory.
+project_dir: outputs/${project.name}/
 output: outputs/${project.name}/${exp_tag}
 
 hydra: # Hydra config
@@ -118,7 +119,6 @@ train: # Training configurable parameters
   epochs: 1000
   checkpoint_interval: 1
   dataloader:
-    batch_size: 1
     pin_memory: true
   sampler:
     shuffle: true
@@ -127,7 +127,6 @@ train: # Training configurable parameters
   
 val: # Validation configurable parameters
   dataloader:
-    batch_size: 1
     pin_memory: true
   sampler:
     shuffle: true
