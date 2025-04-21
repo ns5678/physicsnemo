@@ -23,7 +23,9 @@ the config.yaml file)
 
 # from dataclasses import dataclass
 
-import torch, math
+import math
+
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -32,13 +34,17 @@ from physicsnemo.models.layers.ball_query import BallQueryLayer
 # from physicsnemo.models.meta import ModelMetaData
 # from physicsnemo.models.module import Module
 
+
 def fourier_encode(coords, num_freqs):
     """Function to caluculate fourier features"""
     # Create a range of frequencies
     freqs = torch.exp(torch.linspace(0, math.pi, num_freqs))
     # Generate sine and cosine features
-    features = [torch.sin(coords * f) for f in freqs] + [torch.cos(coords * f) for f in freqs]
-    return torch.cat(features, dim=-1) 
+    features = [torch.sin(coords * f) for f in freqs] + [
+        torch.cos(coords * f) for f in freqs
+    ]
+    return torch.cat(features, dim=-1)
+
 
 def calculate_pos_encoding(nx, d=8):
     """Function to caluculate positional encoding"""
@@ -100,26 +106,26 @@ class BQWarp(nn.Module):
         )
 
         p_grid = torch.reshape(p_grid, (batch_size, nx * ny * nz, 3))
-        p1 = nx * ny * nz
-        p2 = x.shape[1]
+        # p1 = nx * ny * nz
+        # p2 = x.shape[1]
 
         if reverse_mapping:
-            lengths1 = torch.full((batch_size,), p1, dtype=torch.int32)
-            lengths2 = torch.full((batch_size,), p2, dtype=torch.int32)
+            # lengths1 = torch.full((batch_size,), p1, dtype=torch.int32)
+            # lengths2 = torch.full((batch_size,), p2, dtype=torch.int32)
             mapping, num_neighbors, outputs = self.ball_query_layer(
                 p_grid,
                 x,
-                lengths1,
-                lengths2,
+                # lengths1,
+                # lengths2,
             )
         else:
-            lengths1 = torch.full((batch_size,), p2, dtype=torch.int32)
-            lengths2 = torch.full((batch_size,), p1, dtype=torch.int32)
+            # lengths1 = torch.full((batch_size,), p2, dtype=torch.int32)
+            # lengths2 = torch.full((batch_size,), p1, dtype=torch.int32)
             mapping, num_neighbors, outputs = self.ball_query_layer(
                 x,
                 p_grid,
-                lengths1,
-                lengths2,
+                # lengths1,
+                # lengths2,
             )
 
         return mapping, outputs
@@ -301,7 +307,7 @@ class GeometryRep(nn.Module):
         self.hops = geometry_rep.geo_conv.hops
 
     def forward(self, x, p_grid, sdf):
-        
+
         if self.geo_encoding_type == "both" or self.geo_encoding_type == "stl":
             # Calculate multi-scale geoemtry dependency
             x_encoding = []
@@ -350,7 +356,9 @@ class NNBasisFunctions(nn.Module):
         self.num_modes = model_parameters.num_modes
 
         if self.fourier_features:
-            input_features_calculated = input_features + input_features * self.num_modes * 2
+            input_features_calculated = (
+                input_features + input_features * self.num_modes * 2
+            )
         else:
             input_features_calculated = input_features
 
@@ -433,11 +441,17 @@ class AggregationModel(nn.Module):
 
         return out
 
+
 class LocalPointConv(nn.Module):
     """Layer for local geometry point kernel"""
 
     def __init__(
-        self, input_features, base_layer, output_features, model_parameters=None, new_change=True
+        self,
+        input_features,
+        base_layer,
+        output_features,
+        model_parameters=None,
+        new_change=True,
     ):
         super(LocalPointConv, self).__init__()
         self.input_features = input_features
@@ -451,6 +465,7 @@ class LocalPointConv(nn.Module):
         out = self.fc2(out)
 
         return out
+
 
 # @dataclass
 # class MetaData(ModelMetaData):
@@ -662,10 +677,12 @@ class DoMINO(nn.Module):
             position_encoder_base_neurons, position_encoder_base_neurons
         )
 
-        base_layer_geo = model_parameters.geometry_local.base_layer
+        # base_layer_geo = model_parameters.geometry_local.base_layer
 
         # BQ for surface
-        self.surface_neighbors_in_radius = model_parameters.geometry_local.surface_neighbors_in_radius
+        self.surface_neighbors_in_radius = (
+            model_parameters.geometry_local.surface_neighbors_in_radius
+        )
         self.surface_radius = model_parameters.geometry_local.surface_radii
         self.surface_bq_warp = nn.ModuleList()
         self.surface_local_point_conv = nn.ModuleList()
@@ -694,12 +711,14 @@ class DoMINO(nn.Module):
                 LocalPointConv(
                     input_features=total_neighbors_in_radius,
                     base_layer=512,
-                    output_features=self.surface_neighbors_in_radius[ct]
+                    output_features=self.surface_neighbors_in_radius[ct],
                 )
             )
-            
+
         # BQ for volume
-        self.volume_neighbors_in_radius = model_parameters.geometry_local.volume_neighbors_in_radius
+        self.volume_neighbors_in_radius = (
+            model_parameters.geometry_local.volume_neighbors_in_radius
+        )
         self.volume_radius = model_parameters.geometry_local.volume_radii
         self.volume_bq_warp = nn.ModuleList()
         self.volume_local_point_conv = nn.ModuleList()
@@ -715,7 +734,7 @@ class DoMINO(nn.Module):
                 )
             elif self.geo_encoding_type == "sdf":
                 total_neighbors_in_radius = self.volume_neighbors_in_radius[ct]
-            
+
             self.volume_bq_warp.append(
                 BQWarp(
                     input_features=input_features,
@@ -728,16 +747,22 @@ class DoMINO(nn.Module):
                 LocalPointConv(
                     input_features=total_neighbors_in_radius,
                     base_layer=512,
-                    output_features=self.volume_neighbors_in_radius[ct]
+                    output_features=self.volume_neighbors_in_radius[ct],
                 )
             )
 
         # Transmitting surface to volume
         self.surf_to_vol_conv1 = nn.Conv3d(
-            len(model_parameters.geometry_rep.geo_conv.volume_radii)+1, 16, kernel_size=3, padding="same"
+            len(model_parameters.geometry_rep.geo_conv.volume_radii) + 1,
+            16,
+            kernel_size=3,
+            padding="same",
         )
         self.surf_to_vol_conv2 = nn.Conv3d(
-            16, len(model_parameters.geometry_rep.geo_conv.volume_radii)+1, kernel_size=3, padding="same"
+            16,
+            len(model_parameters.geometry_rep.geo_conv.volume_radii) + 1,
+            kernel_size=3,
+            padding="same",
         )
 
         # Aggregation model
@@ -793,7 +818,9 @@ class DoMINO(nn.Module):
         x = self.fc_p2(x)
         return x
 
-    def geo_encoding_local(self, encoding_g, volume_mesh_centers, p_grid, mode="volume"):
+    def geo_encoding_local(
+        self, encoding_g, volume_mesh_centers, p_grid, mode="volume"
+    ):
         """Function to calculate local geometry encoding from global encoding"""
 
         if mode == "volume":
@@ -895,7 +922,11 @@ class DoMINO(nn.Module):
 
             else:
                 surface_mesh_centers = torch.cat(
-                    (surface_mesh_centers, surface_normals, torch.log(surface_areas) / 10),
+                    (
+                        surface_mesh_centers,
+                        surface_normals,
+                        torch.log(surface_areas) / 10,
+                    ),
                     axis=-1,
                 )
                 surface_mesh_neighbors = torch.cat(
@@ -1057,7 +1088,9 @@ class DoMINO(nn.Module):
             geo_centers_surf = (
                 2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
             )
-            encoding_g_surf = self.geo_rep_surface1(geo_centers_surf, s_grid, sdf_surf_grid)
+            encoding_g_surf = self.geo_rep_surface1(
+                geo_centers_surf, s_grid, sdf_surf_grid
+            )
 
             # for _ in range(1):
             #     encoding_g_surf = self.surf_to_vol_conv2(self.activation(self.surf_to_vol_conv1(encoding_g_surf)))
@@ -1087,7 +1120,9 @@ class DoMINO(nn.Module):
             geo_centers_surf = (
                 2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
             )
-            encoding_g_surf = self.geo_rep_surface(geo_centers_surf, s_grid, sdf_surf_grid)
+            encoding_g_surf = self.geo_rep_surface(
+                geo_centers_surf, s_grid, sdf_surf_grid
+            )
 
             # Positional encoding based on center of mass of geometry to surface node
             pos_surface_center_of_mass = data_dict["pos_surface_center_of_mass"]
