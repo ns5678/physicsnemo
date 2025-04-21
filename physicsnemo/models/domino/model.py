@@ -982,7 +982,7 @@ class DoMINO(nn.Module):
         inlet_velocity,
         air_density,
         eval_mode,
-        num_sample_points=20,
+        num_sample_points=10,
         noise_intensity=50,
     ):
         """Function to approximate solution sampling the neighborhood information"""

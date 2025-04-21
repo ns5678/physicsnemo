@@ -69,8 +69,8 @@ nvmlInit()
 
 from physicsnemo.utils.profiling import profile, Profiler
 
-Profiler().enable("line_profiler")
-Profiler().initialize()
+# Profiler().enable("line_profiler")
+# Profiler().initialize()
 
 
 def relative_loss_fn(output, target, padded_value=-10):
@@ -873,7 +873,7 @@ def main(cfg: DictConfig) -> None:
         logger.info(
             f"Device {dist.device} "
             f"LOSS train {avg_loss:.5f} "
-            # f"valid {avg_vloss:.5f} "
+            f"valid {avg_vloss:.5f} "
             f"Current lr {scheduler.get_last_lr()[0]}"
             f"Integral factor {initial_integral_factor}"
         )
@@ -893,8 +893,8 @@ def main(cfg: DictConfig) -> None:
         if dist.world_size > 1:
             torch.distributed.barrier()
 
-        # if avg_vloss < best_vloss:  # This only considers GPU: 0, is that okay?
-        #     best_vloss = avg_vloss
+        if avg_vloss < best_vloss:  # This only considers GPU: 0, is that okay?
+            best_vloss = avg_vloss
         #     # if dist.rank == 0:
         #     save_checkpoint(
         #         to_absolute_path(best_model_path),
