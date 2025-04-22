@@ -691,7 +691,7 @@ def main(cfg: DictConfig) -> None:
                 "Training vs. Validation Loss",
                 {
                     "Training": avg_loss,
-                    # "Validation": avg_vloss
+                    "Validation": avg_vloss
                 },
                 epoch_number,
             )
@@ -716,7 +716,7 @@ def main(cfg: DictConfig) -> None:
         #     )
         if dist.rank == 0:
             print(
-                f"Device { dist.device}, Best val loss {best_vloss}, Time taken {time.perf_counter() - start_time}"
+                f"Device { dist.device}, Best val loss {best_vloss}"
             )
 
         if dist.rank == 0 and (epoch + 1) % cfg.train.checkpoint_interval == 0.0:
