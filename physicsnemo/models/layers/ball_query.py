@@ -22,6 +22,8 @@ import warp as wp
 class BallQuery(torch.autograd.Function):
     """
     Warp based Ball Query.
+
+    Note: only differentiable with respect to points1 and points2.
     """
 
     @wp.kernel
@@ -34,18 +36,34 @@ class BallQuery(torch.autograd.Function):
         mapping: wp.array3d(dtype=wp.int32),
         num_neighbors: wp.array2d(dtype=wp.int32),
     ):
+        """
+        Performs ball query operation to find neighboring points within a specified radius.
 
-        # Get index of point1
+        For each point in points1, finds up to k neighboring points from points2 that are
+        within the specified radius. Uses a hash grid for efficient spatial queries.
+
+        Note that the neighbors found are not strictly guaranteed to be the closest k neighbors,
+        in the event that more than k neighbors are found within the radius.
+
+        Args:
+            points1: Array of query points
+            points2: Array of points to search
+            grid: Pre-computed hash grid for accelerated spatial queries
+            k: Maximum number of neighbors to find for each query point
+            radius: Maximum search radius for finding neighbors
+            mapping: Output array to store indices of neighboring points. Should be instantiated as zeros(1, len(points1), k)
+            num_neighbors: Output array to store the number of neighbors found for each query point. Should be instantiated as zeros(1, len(points1))
+        """
         tid = wp.tid()
 
         # Get position from points1
         pos = points1[tid]
 
         # particle contact
-        neighbors = wp.hash_grid_query(grid, pos, radius)
+        neighbors = wp.hash_grid_query(id=grid, point=pos, max_dist=radius)
 
         # Keep track of the number of neighbors found
-        nr_found = wp.int32(0)
+        neighbors_found = wp.int32(0)
 
         # loop through neighbors to compute density
         for index in neighbors:
@@ -55,18 +73,18 @@ class BallQuery(torch.autograd.Function):
                 continue
 
             # Add neighbor to the list
-            mapping[0, tid, nr_found] = index
+            mapping[0, tid, neighbors_found] = index
 
             # Increment the number of neighbors found
-            nr_found += 1
+            neighbors_found += 1
 
             # Break if we have found enough neighbors
-            if nr_found == k:
+            if neighbors_found == k:
                 num_neighbors[0, tid] = k
                 break
 
         # Set the number of neighbors
-        num_neighbors[0, tid] = nr_found
+        num_neighbors[0, tid] = neighbors_found
 
     @wp.kernel
     def sparse_ball_query(
@@ -75,36 +93,35 @@ class BallQuery(torch.autograd.Function):
         num_neighbors: wp.array2d(dtype=wp.int32),
         outputs: wp.array4d(dtype=wp.float32),
     ):
-        # Get index of point1
-        p1 = wp.tid()
+        tid = wp.tid()
 
         # Get number of neighbors
-        k = num_neighbors[0, p1]
+        k = num_neighbors[0, tid]
 
         # Loop through neighbors
         for _k in range(k):
             # Get point2 index
-            index = mapping[0, p1, _k]
+            index = mapping[0, tid, _k]
 
             # Get position from points2
             pos = points2[index]
 
             # Set the output
-            outputs[0, p1, _k, 0] = pos[0]
-            outputs[0, p1, _k, 1] = pos[1]
-            outputs[0, p1, _k, 2] = pos[2]
+            outputs[0, tid, _k, 0] = pos[0]
+            outputs[0, tid, _k, 1] = pos[1]
+            outputs[0, tid, _k, 2] = pos[2]
 
     @staticmethod
     def forward(
         ctx,
-        points1,
-        points2,
-        # lengths1,
-        # lengths2,
-        k,
-        radius,
-        hash_grid,
-    ):
+        points1: torch.Tensor,
+        points2: torch.Tensor,
+        # lengths1: torch.Tensor,
+        # lengths2: torch.Tensor,
+        k: int,
+        radius: float,
+        hash_grid: wp.HashGrid,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Only works for batch size 1
         if points1.shape[0] != 1:
             raise AssertionError("nly works for batch size 1")
@@ -202,7 +219,12 @@ class BallQuery(torch.autograd.Function):
         )
 
     @staticmethod
-    def backward(ctx, grad_mapping, grad_num_neighbors, grad_outputs):
+    def backward(
+        ctx,
+        grad_mapping: torch.Tensor,
+        grad_num_neighbors: torch.Tensor,
+        grad_outputs: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, None, None, None]:
         # Map incoming torch grads to our output variable
         ctx.outputs.grad = wp.from_torch(grad_outputs, dtype=wp.float32)
 
@@ -244,18 +266,35 @@ class BallQueryLayer(torch.nn.Module):
     Args:
         k (int): Number of neighbors.
         radius (float): Radius of influence.
-        grid_size (int): Uniform grid resolution
+        grid_size (int): Resolution of the hash grid. (Assumed to be uniform in all dimensions.)
     """
 
-    def __init__(self, k, radius, grid_size=32):
+    def __init__(self, k: int, radius: float, grid_size: int = 32):
         super().__init__()
         wp.init()
         self.k = k
         self.radius = radius
         self.hash_grid = wp.HashGrid(grid_size, grid_size, grid_size)
 
-    # def forward(self, points1, points2, lengths1, lengths2):
-    def forward(self, points1, points2):
+    def forward(
+        self, points1: torch.Tensor, points2: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Performs ball query operation to find neighboring points within a specified radius.
+
+        For each point in points1, finds up to k neighboring points from points2 that are
+        within the specified radius. Uses a hash grid for efficient spatial queries.
+
+        Args:
+            points1: Tensor of shape (batch_size, num_points1, 3) containing query points
+            points2: Tensor of shape (batch_size, num_points2, 3) containing points to search
+
+        Returns:
+            tuple containing:
+                - mapping: Tensor containing indices of neighboring points
+                - num_neighbors: Tensor containing the number of neighbors found for each query point
+                - outputs: Tensor containing features or coordinates of the neighboring points
+        """
         return BallQuery.apply(
             points1,
             points2,
