@@ -155,10 +155,11 @@ class GeoConvOut(nn.Module):
         )
 
         mask = abs(x - 0) > 1e-6
-
+        # print("conv in:", torch.mean(x))
         x = self.activation(self.fc1(x))
         x = self.activation(self.fc2(x))
         x = F.tanh(self.fc3(x))
+        # print("conv out:", torch.mean(mask.float()), torch.mean(x))
         mask = mask[:, :, :, 0:1].expand(
             mask.shape[0], mask.shape[1], mask.shape[2], x.shape[-1]
         )
@@ -314,10 +315,12 @@ class GeometryRep(nn.Module):
             for j, p in enumerate(self.radii):
                 mapping, k_short = self.bq_warp[j](x, p_grid)
                 x_encoding_inter = self.geo_conv_out[j](k_short)
+                # print("x-enc", torch.mean(x_encoding_inter), x_encoding_inter.shape)
                 # Propagate information in the geometry enclosed BBox
                 for _ in range(self.hops):
                     dx = self.geo_processors[j](x_encoding_inter) / self.hops
                     x_encoding_inter = x_encoding_inter + dx
+                    # print("x-enc in", torch.mean(x_encoding_inter), x_encoding_inter.shape)
                 x_encoding.append(x_encoding_inter)
             x_encoding = torch.cat(x_encoding, axis=1)
 
@@ -862,9 +865,10 @@ class DoMINO(nn.Module):
                 geo_encoding_sampled = geo_encoding_sampled * mask
                 
                 encoding_g_inner.append(geo_encoding_sampled)
-
+                # print(j, torch.mean(geo_encoding_sampled), torch.mean(encoding_g[:, j]), torch.mean(geo_encoding))
             encoding_g_inner = torch.cat(encoding_g_inner, axis=2)
             encoding_g_inner = point_conv[p](encoding_g_inner)
+            # print(torch.mean(encoding_g_inner), p, q)
             encoding_outer.append(encoding_g_inner)
 
         encoding_g = torch.cat(encoding_outer, axis=-1)
@@ -1032,6 +1036,7 @@ class DoMINO(nn.Module):
                     )
                     volume_m_c = volume_mesh_centers + noise
                 basis_f = nn_basis[f](volume_m_c)
+                # print("b:", torch.mean(basis_f), torch.mean(encoding_node), torch.mean(encoding_g))
                 output = torch.cat((basis_f, encoding_node, encoding_g), axis=-1)
                 if self.encode_parameters:
                     output = torch.cat((output, param_encoding), axis=-1)
@@ -1044,6 +1049,7 @@ class DoMINO(nn.Module):
                     else:
                         output_neighbor += agg_model[f](output) * (1.0 / dist)
                         dist_sum += 1.0 / dist
+            # print(torch.mean(dist_sum))
             if num_sample_points > 1:
                 output_res = 0.5 * output_center + 0.5 * output_neighbor / dist_sum
             else:
@@ -1092,14 +1098,18 @@ class DoMINO(nn.Module):
             geo_centers_surf = (
                 2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
             )
+            
             encoding_g_surf = self.geo_rep_surface1(
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
+            # print("SR:", vol_max, vol_min, torch.mean(geo_centers_vol), torch.mean(geo_centers_surf))
+            # print("SS:", surf_min, surf_max, torch.mean(encoding_g_vol), torch.mean(encoding_g_surf), torch.mean(sdf_grid))
 
             # for _ in range(1):
             #     encoding_g_surf = self.surf_to_vol_conv2(self.activation(self.surf_to_vol_conv1(encoding_g_surf)))
 
             encoding_g_vol += encoding_g_surf
+            # print("geo_vol:", torch.mean(encoding_g_vol))
 
             # SDF on volume mesh nodes
             sdf_nodes = data_dict["sdf_nodes"]
@@ -1127,6 +1137,7 @@ class DoMINO(nn.Module):
             encoding_g_surf = self.geo_rep_surface(
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
+            # print("geo_surf:", torch.mean(encoding_g_surf))
 
             # Positional encoding based on center of mass of geometry to surface node
             pos_surface_center_of_mass = data_dict["pos_surface_center_of_mass"]
@@ -1144,6 +1155,7 @@ class DoMINO(nn.Module):
             encoding_g_vol = self.geo_encoding_local(
                 0.5 * encoding_g_vol, volume_mesh_centers, p_grid, mode="volume"
             )
+            # print(torch.mean(volume_mesh_centers), torch.mean(encoding_g_vol), torch.mean(p_grid))
 
             # Approximate solution on volume node
             output_vol = self.calculate_solution(
