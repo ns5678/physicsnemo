@@ -189,6 +189,7 @@ def relative_loss_fn_area(
 ):
     scale_factor = 1.0  # Get this from the dataset
     area = area * area_scaling_factor
+    area = torch.unsqueeze(area, -1)
     ws_pred = torch.sqrt(
         output[:, :, 1:2] ** 2.0 + output[:, :, 2:3] ** 2.0 + output[:, :, 3:4] ** 2.0
     )
@@ -257,6 +258,7 @@ def mse_loss_fn_area(
 ):
     scale_factor = 1.0  # Get this from the dataset
     area = area * area_scaling_factor
+    area = torch.unsqueeze(area, -1)
     ws_pred = torch.sqrt(
         output[:, :, 1:2] ** 2.0 + output[:, :, 2:3] ** 2.0 + output[:, :, 3:4] ** 2.0
     )
@@ -330,14 +332,14 @@ def integral_loss_fn(output, target, area, normals, padded_value=-10):
     return loss
 
 
-def integral_loss_fn_new(output, target, area, normals, padded_value=-10):
-    drag_loss = drag_loss_fn(output, target, area, normals, padded_value=-10)
-    lift_loss = lift_loss_fn(output, target, area, normals, padded_value=-10)
+def integral_loss_fn_new(output, target, area, normals, stream_velocity=None, padded_value=-10):
+    drag_loss = drag_loss_fn(output, target, area, normals, stream_velocity, padded_value=-10)
+    lift_loss = lift_loss_fn(output, target, area, normals, stream_velocity, padded_value=-10)
     return lift_loss + drag_loss
 
 
-def lift_loss_fn(output, target, area, normals, padded_value=-10):
-    vel_inlet = 30.0  # Get this from the dataset
+def lift_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
+    vel_inlet = stream_velocity  # Get this from the dataset
     mask = abs(target - padded_value) > 1e-3
     area = torch.unsqueeze(area, -1)
     output_true = target * mask * area * (vel_inlet) ** 2.0
@@ -357,8 +359,8 @@ def lift_loss_fn(output, target, area, normals, padded_value=-10):
     return loss
 
 
-def drag_loss_fn(output, target, area, normals, padded_value=-10):
-    vel_inlet = 30.0  # Get this from the dataset
+def drag_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
+    vel_inlet = stream_velocity  # Get this from the dataset
     mask = abs(target - padded_value) > 1e-3
     area = torch.unsqueeze(area, -1)
     output_true = target * mask * area * (vel_inlet) ** 2.0
@@ -376,7 +378,6 @@ def drag_loss_fn(output, target, area, normals, padded_value=-10):
     loss = (masked_pred - masked_truth) ** 2.0
     loss = torch.mean(loss)
     return loss
-
 
 def validation_step(
     dataloader,
@@ -414,6 +415,7 @@ def validation_step(
                     target_surf = sampled_batched["surface_fields"]
                     surface_normals = sampled_batched["surface_normals"]
                     surface_areas = sampled_batched["surface_areas"]
+                    stream_velocity = sample_batched["stream_velocity"]
                     if loss_fn_type.loss_type == "rmse":
                         loss_norm_surf = relative_loss_fn_surface(
                             prediction_surf,
@@ -456,6 +458,7 @@ def validation_step(
                             target_surf,
                             surface_areas,
                             surface_normals,
+                            stream_velocity,
                             padded_value=-10,
                         )
                     ) * integral_scaling_factor  # * 0.0
@@ -533,6 +536,7 @@ def train_epoch(
                 target_surf = sampled_batched["surface_fields"]
                 surface_areas = sampled_batched["surface_areas"]
                 surface_normals = sampled_batched["surface_normals"]
+                stream_velocity = sample_batched["stream_velocity"]
                 if loss_fn_type.loss_type == "rmse":
                     loss_norm_surf = relative_loss_fn_surface(
                         prediction_surf, target_surf, surface_normals, padded_value=-10
@@ -572,6 +576,7 @@ def train_epoch(
                         target_surf,
                         surface_areas,
                         surface_normals,
+                        stream_velocity,
                         padded_value=-10,
                     )
                 ) * integral_scaling_factor  # * 0.0
