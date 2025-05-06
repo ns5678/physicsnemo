@@ -15,7 +15,7 @@
 # limitations under the License.
 
 project: # Project name
-  name: AWS_Dataset_1
+  name: AWS_Dataset
   
 exp_tag: 1 # Experiment tag
 # Main output directory.
@@ -99,7 +99,7 @@ model:
       base_filters: 8
   nn_basis_functions: # Hyperparameters for basis function network
     base_layer: 512
-    fourier_features: true
+    fourier_features: false
     num_modes: 5
   aggregation_model: # Hyperparameters for aggregation network
     base_layer: 512
@@ -126,7 +126,7 @@ train: # Training configurable parameters
   sampler:
     shuffle: true
     drop_last: false
-  checkpoint_dir: /lustre/rranade/physicsnemo_dev/physicsnemo_forked/physicsnemo/examples/cfd/external_aerodynamics/domino/outputs/AWS_Dataset/3/models/
+  checkpoint_dir: /lustre/rranade/physicsnemo_dev/physicsnemo_forked/physicsnemo/examples/cfd/external_aerodynamics/domino/outputs/AWS_Dataset/3/models/ # Use only for retraining
   
 val: # Validation configurable parameters
   dataloader:

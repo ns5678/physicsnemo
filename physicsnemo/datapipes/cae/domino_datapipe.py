@@ -553,7 +553,7 @@ class DoMINODataPipe(Dataset):
             # nvtx.range_push("Geometry Sampling")
             geometry_points = self.config.geom_points_sample
             geometry_coordinates_sampled, idx_geometry = shuffle_array(
-                stl_centers, geometry_points
+                stl_vertices, geometry_points
             )
             if geometry_coordinates_sampled.shape[0] < geometry_points:
                 geometry_coordinates_sampled = pad(
@@ -562,7 +562,7 @@ class DoMINODataPipe(Dataset):
             geom_centers = geometry_coordinates_sampled
             # nvtx.range_pop()
         else:
-            geom_centers = stl_centers
+            geom_centers = stl_vertices
 
         # geom_centers = self.array_provider.float32(geom_centers)
 
@@ -1154,7 +1154,7 @@ def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -
                 for j in range(len(fm_dict)):
                     print(f"Mean std scaling on iteration {j}")
                     d_dict = fm_dict[j]
-                    surf_fields = d_dict["surface_fields"]
+                    surf_fields = d_dict["surface_fields"].cpu().numpy()
 
                     if surf_fields is not None:
                         if j == 0:
@@ -1191,7 +1191,7 @@ def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -
                 for j in range(len(fm_dict)):
                     print(f"Min max scaling on iteration {j}")
                     d_dict = fm_dict[j]
-                    surf_fields = d_dict["surface_fields"]
+                    surf_fields = d_dict["surface_fields"].cpu().numpy()
 
                     if surf_fields is not None:
                         surf_mean = np.mean(surf_fields, 0)

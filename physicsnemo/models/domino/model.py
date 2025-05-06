@@ -1175,7 +1175,7 @@ class DoMINO(nn.Module):
         inlet_velocity,
         air_density,
         eval_mode,
-        num_sample_points=10,
+        num_sample_points=20,
         noise_intensity=50,
     ):
         """Function to approximate solution sampling the neighborhood information"""
@@ -1278,15 +1278,15 @@ class DoMINO(nn.Module):
             encoding_g_vol = self.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
 
             # Normalize based on BBox around surface (car)
-            geo_centers_surf = (
-                2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
-            )
+            # geo_centers_surf = (
+            #     2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
+            # )
 
-            encoding_g_surf = self.geo_rep_surface1(
-                geo_centers_surf, s_grid, sdf_surf_grid
-            )
+            # encoding_g_surf = self.geo_rep_surface1(
+            #     geo_centers_surf, s_grid, sdf_surf_grid
+            # )
 
-            encoding_g_vol += encoding_g_surf
+            # encoding_g_vol += encoding_g_surf
 
             # SDF on volume mesh nodes
             sdf_nodes = data_dict["sdf_nodes"]
