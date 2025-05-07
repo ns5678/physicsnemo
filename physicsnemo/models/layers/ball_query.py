@@ -124,7 +124,12 @@ class BallQuery(torch.autograd.Function):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # Only works for batch size 1
         if points1.shape[0] != 1:
-            raise AssertionError("nly works for batch size 1")
+            raise AssertionError("Only works for batch size 1")
+
+        try:
+            device = str(wp.get_device())
+        except Exception as e:
+            device = "cuda"
 
         # Convert from torch to warp
         ctx.points1 = wp.from_torch(
@@ -144,7 +149,7 @@ class BallQuery(torch.autograd.Function):
             points1.shape[1],
             k,
             dtype=torch.int32,
-            device="cuda",
+            device=device,
             requires_grad=False,
         )
         ctx.mapping = wp.from_torch(mapping, dtype=wp.int32, requires_grad=False)
@@ -152,7 +157,7 @@ class BallQuery(torch.autograd.Function):
             1,
             points1.shape[1],
             dtype=torch.int32,
-            device="cuda",
+            device=device,
             requires_grad=False,
         )
         ctx.num_neighbors = wp.from_torch(
@@ -164,7 +169,7 @@ class BallQuery(torch.autograd.Function):
             k,
             3,
             dtype=torch.float32,
-            device="cuda",
+            device=device,
             requires_grad=(points1.requires_grad or points2.requires_grad),
         )
         ctx.outputs = wp.from_torch(
