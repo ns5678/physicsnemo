@@ -786,7 +786,7 @@ class DoMINO(nn.Module):
         self.use_surface_normals = model_parameters.use_surface_normals
         self.use_surface_area = model_parameters.use_surface_area
         self.encode_parameters = model_parameters.encode_parameters
-        self.param_scaling_factors = model_parameters.parameter_model.scaling_params
+        # self.param_scaling_factors = model_parameters.parameter_model.scaling_params
         self.geo_encoding_type = model_parameters.geometry_encoding_type
 
         if self.use_surface_normals:
