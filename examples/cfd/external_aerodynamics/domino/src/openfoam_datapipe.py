@@ -119,6 +119,7 @@ class OpenFoamDataset(Dataset):
 
         self.global_params_types = global_params_types
         self.global_params_reference = global_params_reference
+        
         self.stream_velocity = 0.0
         for vel_component in self.global_params_reference["inlet_velocity"]:
             self.stream_velocity += vel_component**2
