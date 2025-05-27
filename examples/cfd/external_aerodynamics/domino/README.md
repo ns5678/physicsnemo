@@ -141,6 +141,34 @@ The DoMINO model can be evaluated directly on unknown STLs using the pre-trained
 4. The surface predictions are carried out on the STL surface. The drag and lift
  accuracy will depend on the resolution of the STL.
 
+## Incorporating multiple global simulation parameters for training/inference
+
+DoMINO supports incorporating multiple global simulation parameters (such as inlet
+velocity, air density, etc.) that can vary across different simulations.
+
+1. Define global parameters in the `variables.global_parameters` section of
+   `conf/config.yaml`. Each parameter must specify its type (`vector` or `scalar`)
+   and reference values for normalization.
+
+2. Enable parameter encoding in the model configuration to allow the model to
+   learn from global parameters in `config.yaml` through
+   `model.encode_parameters: true`. When `encode_parameters: true`, the model
+   will: (a) create a dedicated parameter encoding network (`ParameterModel`),
+   (b) normalize parameters using reference values, (c) integrate parameter
+   encodings into both surface and volume predictions.
+
+3. Please ensure that simulation data includes global parameter values. The DoMINO
+   datapipe expects these parameters in the pre-processed `.npy`/`.npz` files.
+   Check `openfoam_datapipe.py` for a sample of how these global parameter values
+   and references are incorporated for a case where the global parameters remain
+   constant across simulations. You will need to adapt `openfoam_datapipe.py`
+   for your specific case.
+
+4. During training, the model handles parameter encoding when
+   `model.encode_parameters: true`. The user would need to adapt the `train.py`
+   and `test.py` if they plan to use any of the above-defined `global_params`
+   in loss function or denormalization.
+
 ## Guidelines for training DoMINO model
 
 1. The DoMINO model allows for training both volume and surface fields using a single model

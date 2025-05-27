@@ -226,7 +226,7 @@ class OpenFoamDataset(Dataset):
             global_params_reference_list, dtype=np.float32
         )
 
-        # Define the list of global parameter values for each simulation.
+        # Prepare the list of global parameter values for each simulation file
         # Note: The user must ensure that the values provided here correspond to the
         # `global_parameters` specified in `config.yaml` and that these parameters
         # exist within each simulation file.
