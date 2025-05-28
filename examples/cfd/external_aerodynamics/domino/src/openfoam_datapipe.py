@@ -234,9 +234,9 @@ class OpenFoamDataset(Dataset):
         global_params_values_list = []
         for key in self.global_params_types.keys():
             if key == "inlet_velocity":
-                global_params_values_list.append(self.stream_velocity)
+                global_params_values_list.extend(self.global_params_reference["inlet_velocity"])
             elif key == "air_density":
-                global_params_values_list.append(self.air_density)
+                global_params_values_list.append(self.global_params_reference["air_density"])
             else:
                 raise ValueError(
                     f"Global parameter {key} not supported for  this dataset"
