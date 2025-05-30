@@ -34,11 +34,11 @@ from omegaconf import DictConfig, OmegaConf
 import numpy as np
 import torch
 
-from modulus.models.domino.model import DoMINO
-from modulus.utils.domino.utils import *
+from physicsnemo.models.domino.model import DoMINO
+from physicsnemo.utils.domino.utils import *
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DistributedDataParallel
-from modulus.distributed import DistributedManager
+from physicsnemo.distributed import DistributedManager
 
 from numpy.typing import NDArray
 from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
@@ -49,7 +49,7 @@ import matplotlib.pyplot as plt
 import pyvista as pv
 
 try:
-    from modulus.sym.geometry.tessellation import Tessellation
+    from physicsnemo.sym.geometry.tessellation import Tessellation
 
     SYM_AVAILABLE = True
 except ImportError:
@@ -752,28 +752,21 @@ class dominoInference:
             self.bounding_box_surface_min_max = [c_min, c_max]
 
     def load_volume_scaling_factors(self):
-        vol_factors = np.array(
-            [
-                [2.2642279, 2.2397292, 1.8689916, 0.7547227],
-                [-1.2899836, -2.2787743, -1.866153, -2.7116761],
-            ],
-            dtype=np.float32,
-        )
-
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        vol_factors_path = os.path.join(scaling_param_path, "volume_scaling_factors.npy")
+        
+        vol_factors = np.load(vol_factors_path, allow_pickle=True)
         vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
         return vol_factors
 
     def load_surface_scaling_factors(self):
-        surf_factors = np.array(
-            [
-                [0.8215038, 0.01063187, 0.01514608, 0.01327803],
-                [-2.1505525, -0.01865184, -0.01514422, -0.0121509],
-            ],
-            dtype=np.float32,
-        )
-
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        surf_factors_path = os.path.join(scaling_param_path, "surface_scaling_factors.npy")
+        
+        surf_factors = np.load(surf_factors_path, allow_pickle=True)
         surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        
         return surf_factors
 
     def read_stl(self):
@@ -1528,7 +1521,7 @@ if __name__ == "__main__":
 
     domino = dominoInference(cfg, dist, False)
     domino.initialize_model(
-        model_path="/lustre/rranade/modulus_dev/modulus_forked/modulus/examples/cfd/external_aerodynamics/domino/outputs/AWS_Dataset/19/models/DoMINO.0.201.pt"
+        model_path="/lustre/snidhan/physicsnemo-work/physicsnemo-repo/physicsnemo/examples/cfd/external_aerodynamics/domino/src/outputs/AWS_Dataset/1/models/DoMINO.0.7.pt"
     )
 
     for count, dirname in enumerate(dirnames_per_gpu):
@@ -1572,7 +1565,7 @@ if __name__ == "__main__":
             "Lift:",
             out_dict["lift_force"],
         )
-        vtp_path = f"/lustre/rranade/modulus_dev/modulus_forked/modulus/examples/cfd/external_aerodynamics/domino/pred_{dirname}_4.vtp"
+        vtp_path = f"/lustre/snidhan/physicsnemo-work/domino-global-param-runs/stl-results/pred_{dirname}_4.vtp"
         domino.mesh_stl.save(vtp_path)
         # vtp_path = f"/lustre/rranade/modulus_dev/modulus_demo/modulus_rishi/modulus/examples/cfd/external_aerodynamics/domino_gtc_demo/sensitivity_pred_{dirname}.vtp"
         reader = vtk.vtkXMLPolyDataReader()

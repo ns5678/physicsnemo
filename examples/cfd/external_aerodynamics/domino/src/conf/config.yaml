@@ -153,7 +153,7 @@ model:
 # └───────────────────────────────────────────┘  
 train: # Training configurable parameters
   epochs: 1000
-  checkpoint_interval: 10
+  checkpoint_interval: 1
   dataloader:
     batch_size: 1
     pin_memory: false # if the preprocessing is outputing GPU data, set this to false
@@ -177,9 +177,9 @@ val: # Validation configurable parameters
 # │          Testing data Configs             │
 # └───────────────────────────────────────────┘  
 eval: # Testing configurable parameters
-  test_path: /lustre/rranade/testing_data # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/rranade/predicted_data # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.455.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /lustre/rranade/scaling_params
+  test_path: /lustre/snidhan/physicsnemo-work/data/aws-full/aws-data-test # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/snidhan/physicsnemo-work/domino-global-param-runs/stl-results # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.7.pt # Name of checkpoint to select from saved checkpoints
+  scaling_param_path: /lustre/snidhan/physicsnemo-work/physicsnemo-repo/physicsnemo/examples/cfd/external_aerodynamics/domino/src/outputs/AWS_Dataset
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
