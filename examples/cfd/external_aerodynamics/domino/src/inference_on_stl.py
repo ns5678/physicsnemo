@@ -668,7 +668,7 @@ class dominoInference:
         self,
         cfg: DictConfig,
         dist: None,
-        cached_geo_encoding: False,
+        cached_geo_encoding: bool = False,
     ):
 
         self.cfg = cfg

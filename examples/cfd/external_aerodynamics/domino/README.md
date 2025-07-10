@@ -23,46 +23,128 @@ discrete points.
 A preprint describing additional details about the model architecture can be found here
 [paper](https://arxiv.org/abs/2501.13350).
 
-## Dataset
+## Prerequisites
+
+Install the required dependencies by running below:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Getting started with the DrivAerML example
+
+### Configuration basics
+
+DoMINO data processing, training and testing is managed through YAML configuration files
+powered by Hydra. The base configuration file, `config.yaml` is located in `src/conf`
+directory.
+
+To select a specific configuration, use the `--config-name` option when running
+the scripts.
+You can modify configuration options in two ways:
+
+1. **Direct Editing:** Modify the YAML files directly
+2. **Command Line Override:** Use Hydra's `++` syntax to override settings at runtime
+
+For example, to change the training epochs (controlled by `train.epochs`):
+
+```bash
+python train.py ++train.epochs=200  # Sets number of epochs to 200
+```
+
+This modular configuration system allows for flexible experimentation while
+maintaining reproducibility.
+
+#### Project logs
+
+Save and track project logs, experiments, tensorboard files etc. by specifying a
+project directory with `project.name`. Tag experiments with `expt`.
+
+#### Data processing
+
+The first step for running the DoMINO pipeline requires processing the raw data
+(vtp, vtu and stl). The related configs can be set in the `data_processor` tab.
+Also, specify the variable names used in the raw dataset and their types
+in `variables.surface` and `variables.volume`.
+For example, you can set the input directory for raw data using
+`data_processor.input_dir` and output directory for processed files using
+`data_processor.output_dir`.
+
+#### Training
+
+Specify the training and validation data paths, bounding box sizes etc. in the
+`data` tab and the training configs such as epochs, batch size etc.
+in the `train` tab.
+
+#### Testing
+
+The testing is directly carried out on raw files.
+Specify the testing configs in the `test` tab.
+
+### Dataset details
 
 In this example, the DoMINO model is trained using DrivAerML dataset from the
 [CAE ML Dataset collection](https://caemldatasets.org/drivaerml/).
-This high-fidelity, open-source (CC-BY-SA) public dataset is specifically designed
-for automotive aerodynamics research. It comprises 500 parametrically morphed variants
-of the widely utilized DrivAer notchback generic vehicle. Mesh generation and scale-resolving
-computational fluid dynamics (CFD) simulations were executed using consistent and validated
-automatic workflows that represent the industrial state-of-the-art. Geometries and comprehensive
-aerodynamic data are published in open-source formats. For more technical details about this
-dataset, please refer to their [paper](https://arxiv.org/pdf/2408.11969).
+This high-fidelity, open-source (CC-BY-SA) public dataset is specifically
+designed for automotive aerodynamics research. It comprises 500 parametrically
+morphed variants of the widely utilized DrivAer notchback generic vehicle.
+Mesh generation and scale-resolving computational fluid dynamics (CFD) simulations
+were executed using consistent and validated automatic workflows that represent
+the industrial state-of-the-art. Geometries and comprehensive aerodynamic data
+are published in open-source formats. For more technical details about this dataset,
+please refer to their [paper](https://arxiv.org/pdf/2408.11969).
 
-## Training the DoMINO model
+Download the DrivAer ML dataset using the provided `download_aws_dataset.sh`
+script or using the [Hugging Face repo](https://huggingface.co/datasets/neashton/drivaerml).
+
+### Data processing for DoMINO model
+
+Each of the raw simulations files in the `vtp`, `vtu` and `stl` format need to be
+processed and saved into `npy` files. The data processing script extracts minmal
+information from these raw files such as STL mesh, surface mesh and fields,
+volume point cloud and fields. Run `process_data.py` with the correct configurations
+for kicking off data processing. Additionally, run `cache_data.py` to save outputs
+of DoMINO datapipe in the `.npy` files. The DoMINO datapipe is set up to calculate
+Signed Distance Field and Nearest Neighbor interpolations on-the-fly during
+training. Caching will save these as a preprocessing step and should be used in
+cases where the STL surface meshes are upwards of 30 million cells.
+Data processing is parallelized and takes a couple of hours to write all the
+processed files.
+
+The final processed dataset should be divided and saved into 2 directories,
+for training and validation.
+
+### Training the DoMINO model
 
 To train and test the DoMINO model on AWS dataset, follow these steps:
 
-1. Download the DrivAer ML dataset using the provided `download_aws_dataset.sh` script or
-   using the [Hugging Face repo](https://huggingface.co/datasets/neashton/drivaerml).
+1. Specify the configuration settings in `conf/config.yaml`.
 
-2. Specify the configuration settings in `conf/config.yaml`.
-
-3. Run `process_data.py`. This will process VTP/VTU files and save them as npy for faster
- processing in DoMINO datapipe. Modify data_processor key in config file. Additionally, run
- `cache_data.py` to save outputs of DoMINO datapipe in the `.npy` files. The DoMINO datapipe
- is set up to calculate Signed Distance Field and Nearest Neighbor interpolations
- on-the-fly during training. Caching will save these as a preprocessing step and should
- be used in cases where the STL surface meshes are upwards of 30 million cells.
- The final processed dataset should be divided and saved into 2 directories, for training
- and validation. Specify these directories in `conf/config.yaml`.
-
-4. Run `train.py` to start the training. Modify data, train and model keys in config file.
+2. Run `train.py` to start the training. Modify data, train and model keys in config file.
   If using cached data then use `conf/cached.yaml` instead of `conf/config.yaml`.
 
-5. Run `test.py` to test on `.vtp` / `.vtu`. Predictions are written to the same file.
+3. Run `test.py` to test on `.vtp` / `.vtu`. Predictions are written to the same file.
   Modify eval key in config file to specify checkpoint, input and output directory.
   Important to note that the data used for testing is in the raw simulation format and
   should not be processed to `.npy`.
 
-6. Download the validation results (saved in form of point clouds in `.vtp` / `.vtu` format),
+4. Download the validation results (saved in form of point clouds in `.vtp` / `.vtu` format),
    and visualize in Paraview.
+
+**Training Guidelines:**
+
+- Duration: A couple of days on a single node of H100 GPU
+- Checkpointing: Automatically resumes from latest checkpoint if interrupted
+- Multi-GPU Support: Compatible with `torchrun` or MPI for distributed training
+- If the training crashes because of OOO, modify the points sampled in volume
+  `model.volume_points_sample` and surface `model.volume_points_sample`
+  to manage memory requirements for your GPU
+- The DoMINO model allows for training both volume and surface fields using a
+  single model but currently the recommendation is to train the volume and
+  surface models separately. This can be controlled through the `conf/config.yaml`.
+- MSE loss for both volume and surface model gives the best results.
+- Bounding box is configurable and will depend on the usecase.
+  The presets are suitable for the DriveAer-ML dataset.
 
 ### Training with Domain Parallelism
 
@@ -71,7 +153,7 @@ via the `ShardTensor` mechanisms and pytorch's FSDP tools.  `ShardTensor`, built
 PyTorch's `DTensor` object, is a domain-parallel-aware tensor that can live on multiple
 GPUs and perform operations in a numerically consistent way.  For more information
 about the techniques of domain parallelism and `ShardTensor`, refer to PhysicsNeMo
-tutorials such as [`ShardTensor`](shard_tensor_tutorial.html).
+tutorials such as [`ShardTensor`](https://docs.nvidia.com/deeplearning/physicsnemo/physicsnemo-core/api/physicsnemo.distributed.shardtensor.html).
 
 In DoMINO specifically, domain parallelism has been abled in two ways, which
 can be used concurrently or separately.  First, the input sampled volumetric
@@ -109,7 +191,7 @@ launch overhead at the cost of more memory use.  For non-sharded
 training, the `two-loop` setting is more optimal. The difference in `one-loop`
 or `two-loop` is purely computational, not algorithmic.
 
-## Retraining recipe for DoMINO model
+### Retraining recipe for DoMINO model
 
 To enable retraining the DoMINO model from a pre-trained checkpoint, follow the steps:
 
@@ -126,7 +208,25 @@ To enable retraining the DoMINO model from a pre-trained checkpoint, follow the 
 5. Download the validation results (saved in form of point clouds in `.vtp` / `.vtu` format),
    and visualize in Paraview.
 
-## DoMINO model inference on STLs
+### DoMINO model pipeline for inference on test samples
+
+After training is completed, `test.py` script can be used to run inference on
+test samples. Follow the below steps to run the `test.py`
+
+1. Update the config in the `conf/config.yaml` under the `Testing data Configs`
+   tab.
+
+2. The test script is designed to run inference on the raw `.stl`, `.vtp` and
+   `.vtu` files for each test sample. Use the same scaling parameters that
+   were generated during the training. Typically this is `outputs/<project.name>/`,
+   where `project.name` is as defined in the `config.yaml`. Update the
+   `eval.scaling_param_path` accordingly.
+
+3. Run the `test.py`. The test script can be run in parallel as well. Refer to
+   the training guidelines for Multi-GPU. Note, for running `test.py` in parallel,
+   the number of GPUs chosen must be <= the number of test samples.
+
+### DoMINO model pipeline for inference on STLs
 
 The DoMINO model can be evaluated directly on unknown STLs using the pre-trained
  checkpoint. Follow the steps outlined below:
@@ -141,7 +241,7 @@ The DoMINO model can be evaluated directly on unknown STLs using the pre-trained
 4. The surface predictions are carried out on the STL surface. The drag and lift
  accuracy will depend on the resolution of the STL.
 
-## Incorporating multiple global simulation parameters for training/inference
+### Incorporating multiple global simulation parameters for training/inference
 
 DoMINO supports incorporating multiple global simulation parameters (such as inlet
 velocity, air density, etc.) that can vary across different simulations.
