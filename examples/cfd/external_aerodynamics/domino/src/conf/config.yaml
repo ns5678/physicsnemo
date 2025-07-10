@@ -38,7 +38,7 @@ resume_dir: ${output}/models
 # └───────────────────────────────────────────┘  
 data_processor: # Data processor configurable parameters
   kind: drivaer_aws # must be either drivesim or drivaer_aws
-  output_dir: /lustre/snidhan/physicsnemo-work/data/aws-full/aws-data-train/
+  output_dir: /lustre/data/aws-full/aws-data-train/
   input_dir: /lustre/datasets/drivaer_aws/drivaer_data_full/
   cached_dir: /lustre/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
@@ -71,8 +71,8 @@ variables:
 # │          Training Data Configs            │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /lustre/snidhan/physicsnemo-work/data/aws-full/aws-data-train/
-  input_dir_val: /lustre/snidhan/physicsnemo-work/data/aws-full/aws-data-val/
+  input_dir: /lustre/data/aws-full/aws-data-train/
+  input_dir_val: /lustre/data/aws-full/aws-data-val/
   bounding_box: # Bounding box dimensions for computational domain
     min: [-3.5, -2.25 , -0.32]
     max: [8.5 , 2.25  , 3.00]
@@ -160,7 +160,7 @@ train: # Training configurable parameters
   sampler:
     shuffle: true
     drop_last: false
-  checkpoint_dir: /lustre/rranade/models/ # Use only for retraining
+  checkpoint_dir: /lustre/models/ # Use only for retraining
   
 # ┌───────────────────────────────────────────┐
 # │          Validation Configs               │
@@ -177,9 +177,9 @@ val: # Validation configurable parameters
 # │          Testing data Configs             │
 # └───────────────────────────────────────────┘  
 eval: # Testing configurable parameters
-  test_path: /lustre/snidhan/physicsnemo-work/data/aws-full/aws-data-test # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/snidhan/physicsnemo-work/domino-global-param-runs/stl-results # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.7.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /lustre/snidhan/physicsnemo-work/physicsnemo-repo/physicsnemo/examples/cfd/external_aerodynamics/domino/src/outputs/AWS_Dataset
+  test_path: /lustre/datasets/testing_data # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/datasets/predicted_data # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.42.pt # Name of checkpoint to select from saved checkpoints
+  scaling_param_path: /lustre/datasets/scaling_params
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
