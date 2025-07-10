@@ -503,10 +503,6 @@ class DoMINODataPipe(Dataset):
 
         # Pull these out and force to fp32:
         with self.device_context:
-            # STREAM_VELOCITY = data_dict["stream_velocity"].astype(
-            #     self.array_provider.float32
-            # )
-            # AIR_DENSITY = data_dict["air_density"].astype(self.array_provider.float32)
             global_params_values = data_dict["global_params_values"].astype(
                 self.array_provider.float32
             )
