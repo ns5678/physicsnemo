@@ -144,7 +144,6 @@ model:
     base_layer: 512
   parameter_model:
     base_layer: 512
-    # scaling_params: [30.0, 1.226] # [inlet_velocity, air_density]
     fourier_features: false
     num_modes: 5
 

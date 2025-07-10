@@ -146,8 +146,6 @@ The DoMINO model can be evaluated directly on unknown STLs using the pre-trained
 DoMINO supports incorporating multiple global simulation parameters (such as inlet
 velocity, air density, etc.) that can vary across different simulations.
 
-### Configuration
-
 1. Define global parameters in the `variables.global_parameters` section of
    `conf/config.yaml`. Each parameter must specify its type (`vector` or `scalar`)
    and reference values for non-dimensionalization.

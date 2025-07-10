@@ -86,8 +86,6 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
         data_dict = dict_to_device(data_dict, device)
 
         # Non-dimensionalization factors
-        # air_density = data_dict["air_density"]
-        # stream_velocity = data_dict["stream_velocity"]
         length_scale = data_dict["length_scale"]
 
         global_params_values = data_dict["global_params_values"]
