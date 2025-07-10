@@ -119,7 +119,6 @@ def test_domino_forward(device, pytestconfig):
         @dataclass
         class parameter_model:
             base_layer: int = 512
-            scaling_params: Sequence = (30.0, 1.226)
             fourier_features: bool = True
             num_modes: int = 5
 
@@ -144,6 +143,7 @@ def test_domino_forward(device, pytestconfig):
         input_features=3,
         output_features_vol=4,
         output_features_surf=5,
+        global_features=2,
         model_parameters=model_params,
     ).to(device)
 
