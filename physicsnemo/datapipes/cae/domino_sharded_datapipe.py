@@ -105,8 +105,6 @@ class ShardedDoMINODataPipe(DoMINODataPipe):
 
         # These keys are scalar-like and should never be sharded
         self.scalar_keys = [
-            # "stream_velocity",
-            # "air_density",
             "global_params_values",
             "global_params_reference",
             "surface_min_max",
