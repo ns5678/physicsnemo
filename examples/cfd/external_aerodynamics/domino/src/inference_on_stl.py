@@ -753,8 +753,10 @@ class dominoInference:
 
     def load_volume_scaling_factors(self):
         scaling_param_path = self.cfg.eval.scaling_param_path
-        vol_factors_path = os.path.join(scaling_param_path, "volume_scaling_factors.npy")
-        
+        vol_factors_path = os.path.join(
+            scaling_param_path, "volume_scaling_factors.npy"
+        )
+
         vol_factors = np.load(vol_factors_path, allow_pickle=True)
         vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
@@ -762,11 +764,13 @@ class dominoInference:
 
     def load_surface_scaling_factors(self):
         scaling_param_path = self.cfg.eval.scaling_param_path
-        surf_factors_path = os.path.join(scaling_param_path, "surface_scaling_factors.npy")
-        
+        surf_factors_path = os.path.join(
+            scaling_param_path, "surface_scaling_factors.npy"
+        )
+
         surf_factors = np.load(surf_factors_path, allow_pickle=True)
         surf_factors = torch.from_numpy(surf_factors).to(self.device)
-        
+
         return surf_factors
 
     def read_stl(self):
@@ -1402,8 +1406,6 @@ class dominoInference:
                 surface_neighbors_normals,
                 surface_areas,
                 surface_neighbors_areas,
-                # inlet_velocity,
-                # air_density,
                 global_params_values,
                 global_params_reference,
             )
@@ -1420,8 +1422,6 @@ class dominoInference:
                 surface_neighbors_normals,
                 surface_areas,
                 surface_neighbors_areas,
-                # inlet_velocity,
-                # air_density,
                 global_params_values,
                 global_params_reference,
             )
@@ -1477,8 +1477,6 @@ class dominoInference:
                 volume_mesh_centers,
                 geo_encoding_local,
                 pos_encoding,
-                # inlet_velocity,
-                # air_density,
                 global_params_values,
                 global_params_reference,
                 num_sample_points=self.stencil_size,
@@ -1492,8 +1490,6 @@ class dominoInference:
                 volume_mesh_centers,
                 geo_encoding_local,
                 pos_encoding,
-                # inlet_velocity,
-                # air_density,
                 global_params_values,
                 global_params_reference,
                 num_sample_points=self.stencil_size,
@@ -1521,8 +1517,8 @@ if __name__ == "__main__":
 
     domino = dominoInference(cfg, dist, False)
     domino.initialize_model(
-        model_path="/lustre/snidhan/physicsnemo-work/physicsnemo-repo/physicsnemo/examples/cfd/external_aerodynamics/domino/src/outputs/AWS_Dataset/1/models/DoMINO.0.7.pt"
-    )
+        model_path="/lustre/models/DoMINO.0.7.pt"
+    )  ## Replace the model path with location of the trained model
 
     for count, dirname in enumerate(dirnames_per_gpu):
         # print(f"Processing file {dirname}")
@@ -1567,7 +1563,6 @@ if __name__ == "__main__":
         )
         vtp_path = f"/lustre/snidhan/physicsnemo-work/domino-global-param-runs/stl-results/pred_{dirname}_4.vtp"
         domino.mesh_stl.save(vtp_path)
-        # vtp_path = f"/lustre/rranade/modulus_dev/modulus_demo/modulus_rishi/modulus/examples/cfd/external_aerodynamics/domino_gtc_demo/sensitivity_pred_{dirname}.vtp"
         reader = vtk.vtkXMLPolyDataReader()
         reader.SetFileName(f"{vtp_path}")
         reader.Update()
