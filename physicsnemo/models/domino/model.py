@@ -797,7 +797,6 @@ class DoMINO(nn.Module):
         self.use_surface_normals = model_parameters.use_surface_normals
         self.use_surface_area = model_parameters.use_surface_area
         self.encode_parameters = model_parameters.encode_parameters
-        # self.param_scaling_factors = model_parameters.parameter_model.scaling_params
         self.geo_encoding_type = model_parameters.geometry_encoding_type
 
         if self.use_surface_normals:
@@ -1108,24 +1107,6 @@ class DoMINO(nn.Module):
         num_sample_points = surface_mesh_neighbors.shape[2] + 1
 
         if self.encode_parameters:
-            # inlet_velocity = torch.unsqueeze(inlet_velocity, 1)
-            # inlet_velocity = inlet_velocity.expand(
-            #     inlet_velocity.shape[0],
-            #     surface_mesh_centers.shape[1],
-            #     inlet_velocity.shape[2],
-            # )
-            # inlet_velocity = inlet_velocity / self.param_scaling_factors[0]
-
-            # air_density = torch.unsqueeze(air_density, 1)
-            # air_density = air_density.expand(
-            #     air_density.shape[0],
-            #     surface_mesh_centers.shape[1],
-            #     air_density.shape[2],
-            # )
-            # air_density = air_density / self.param_scaling_factors[1]
-
-            # params = torch.cat((inlet_velocity, air_density), axis=-1)
-            # param_encoding = self.parameter_model(params)
             processed_parameters = []
             for k in range(global_params_values.shape[1]):
                 param = torch.unsqueeze(global_params_values[:, k, :], 1)
@@ -1290,22 +1271,6 @@ class DoMINO(nn.Module):
             agg_model = self.agg_model_surf
 
         if self.encode_parameters:
-            # inlet_velocity = torch.unsqueeze(inlet_velocity, 1)
-            # inlet_velocity = inlet_velocity.expand(
-            #     inlet_velocity.shape[0],
-            #     volume_mesh_centers.shape[1],
-            #     inlet_velocity.shape[2],
-            # )
-            # inlet_velocity = inlet_velocity / self.param_scaling_factors[0]
-
-            # air_density = torch.unsqueeze(air_density, 1)
-            # air_density = air_density.expand(
-            #     air_density.shape[0], volume_mesh_centers.shape[1], air_density.shape[2]
-            # )
-            # air_density = air_density / self.param_scaling_factors[1]
-
-            # params = torch.cat((inlet_velocity, air_density), axis=-1)
-            # param_encoding = self.parameter_model(params)
             processed_parameters = []
             for k in range(global_params_values.shape[1]):
                 param = torch.unsqueeze(global_params_values[:, k, :], 1)
