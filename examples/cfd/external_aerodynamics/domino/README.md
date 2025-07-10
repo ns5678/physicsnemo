@@ -146,28 +146,48 @@ The DoMINO model can be evaluated directly on unknown STLs using the pre-trained
 DoMINO supports incorporating multiple global simulation parameters (such as inlet
 velocity, air density, etc.) that can vary across different simulations.
 
+### Configuration
+
 1. Define global parameters in the `variables.global_parameters` section of
    `conf/config.yaml`. Each parameter must specify its type (`vector` or `scalar`)
-   and reference values for normalization.
+   and reference values for non-dimensionalization.
 
-2. Enable parameter encoding in the model configuration to allow the model to
-   learn from global parameters in `config.yaml` through
-   `model.encode_parameters: true`. When `encode_parameters: true`, the model
-   will: (a) create a dedicated parameter encoding network (`ParameterModel`),
-   (b) normalize parameters using reference values, (c) integrate parameter
-   encodings into both surface and volume predictions.
+2. For `vector` type parameters:
+   - If values are single-direction vectors (e.g., [30, 0, 0]), define reference as [30]
+   - If values are two-direction vectors (e.g., [30, 30, 0]), define reference as [30, 30]
 
-3. Please ensure that simulation data includes global parameter values. The DoMINO
-   datapipe expects these parameters in the pre-processed `.npy`/`.npz` files.
-   Check `openfoam_datapipe.py` for a sample of how these global parameter values
-   and references are incorporated for a case where the global parameters remain
-   constant across simulations. You will need to adapt `openfoam_datapipe.py`
-   for your specific case.
+3. Enable parameter encoding in the model configuration by setting
+   `model.encode_parameters: true`. This will:
+   - Create a dedicated parameter encoding network (`ParameterModel`)
+   - Non-dimensionalize parameters using reference values from `config.yaml`
+   - Integrate parameter encodings into both surface and volume predictions
 
-4. During training, the model handles parameter encoding when
-   `model.encode_parameters: true`. The user would need to adapt the `train.py`
-   and `test.py` if they plan to use any of the above-defined `global_params`
-   in loss function or denormalization.
+4. Ensure your simulation data includes global parameter values. The DoMINO
+   datapipe expects these parameters in the pre-processed `.npy`/`.npz` files:
+   - Examine `openfoam_datapipe.py` and `process_data.py` for examples of how global
+     parameter values are incorporated for external aerodynamics
+   - For the automotive example, `air_density` and `inlet_velocity` remain constant
+     across simulations
+   - Adapt these files for your specific case to correctly calculate
+     `global_params_values` and `global_params_reference` during data preprocessing
+
+5. During training, the model automatically handles global parameter encoding when
+   `model.encode_parameters: true` is set
+   - You may need to adapt `train.py` if you plan to use global parameters in loss
+     functions or de-non-dimensionalization
+
+6. During testing with `test.py`, define `global_params_values` for each test sample:
+   - Global parameters must match those defined in `config.yaml`
+   - For each parameter (e.g., "inlet_velocity", "air_density"), provide appropriate
+     values for each simulation
+   - See the `main()` function in `test.py` for implementation examples
+   - If using global parameters for de-non-dimensionalization, modify `test_step()`
+
+7. When inferencing on unseen geometries with `inference_on_stl.py`:
+   - Define `global_params_values` and `global_params_reference` in both
+     `compute_solution_in_volume()` and `compute_solution_on_surface()` methods
+   - Adjust these parameters based on your specific use case and parameters defined
+     in `config.yaml`
 
 ## Guidelines for training DoMINO model
 
