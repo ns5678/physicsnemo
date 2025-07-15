@@ -172,3 +172,4 @@ multirun/
 
 # SLURM
 slurm-*.out
+sbatch_logs/
