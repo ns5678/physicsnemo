@@ -170,7 +170,6 @@ train: # Training configurable parameters
     drop_last: false
   checkpoint_dir: /user/models/ # Use only for retraining
 
-  
 # ┌───────────────────────────────────────────┐
 # │          Validation Configs               │
 # └───────────────────────────────────────────┘  
