@@ -714,6 +714,7 @@ class DoMINO(nn.Module):
     >>> bsize = 1
     >>> nx, ny, nz = cfg.model.interp_res
     >>> num_neigh = 7
+    >>> global_features = 2
     >>> pos_normals_closest_vol = torch.randn(bsize, 100, 3).to(device)
     >>> pos_normals_com_vol = torch.randn(bsize, 100, 3).to(device)
     >>> pos_normals_com_surface = torch.randn(bsize, 100, 3).to(device)
