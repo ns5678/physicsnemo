@@ -485,10 +485,8 @@ def shuffle_array(
     points_per_chunk = [
         round(n_points * c.shape[0] / N_input_points) for c in chunk_weights
     ]
-    print(f"points_per_chunk: {points_per_chunk}")
 
     gap = n_points - sum(points_per_chunk)
-    print(f"gap: {gap}")
 
     if gap > 0:
         for g in range(gap):
@@ -703,8 +701,8 @@ def combine_dict(old_dict: dict[Any, Any], new_dict: dict[Any, Any]) -> dict[Any
 
 
 def create_grid(
-    max_coords: ArrayType, min_coords: ArrayType, resolution: ArrayType
-) -> ArrayType:
+    max_coords: torch.Tensor, min_coords: torch.Tensor, resolution: torch.Tensor
+) -> torch.Tensor:
     """Create a 3D regular grid from coordinate bounds and resolution.
 
     This function generates a regular 3D grid spanning from min_coords to
@@ -721,36 +719,37 @@ def create_grid(
         grid point. The last dimension contains [x, y, z] coordinates.
 
     Examples:
-        >>> import numpy as np
-        >>> min_bounds = np.array([0.0, 0.0, 0.0])
-        >>> max_bounds = np.array([1.0, 1.0, 1.0])
-        >>> grid_res = np.array([2, 2, 2])
+        >>> import torch
+        >>> min_bounds = torch.tensor([0.0, 0.0, 0.0])
+        >>> max_bounds = torch.tensor([1.0, 1.0, 1.0])
+        >>> grid_res = torch.tensor([2, 2, 2])
         >>> grid = create_grid(max_bounds, min_bounds, grid_res)
         >>> grid.shape
         (2, 2, 2, 3)
-        >>> np.allclose(grid[0, 0, 0], [0.0, 0.0, 0.0])
+        >>> torch.allclose(grid[0, 0, 0], torch.tensor([0.0, 0.0, 0.0]))
         True
-        >>> np.allclose(grid[1, 1, 1], [1.0, 1.0, 1.0])
+        >>> torch.allclose(grid[1, 1, 1], torch.tensor([1.0, 1.0, 1.0]))
         True
     """
-    xp = array_type(max_coords)
+    # Linspace to make evenly spaced steps along each axis:
+    dd = [
+        torch.linspace(
+            min_coords[i],
+            max_coords[i],
+            resolution[i],
+            dtype=max_coords.dtype,
+            device=max_coords.device,
+        )
+        for i in range(3)
+    ]
 
-    dx = xp.linspace(
-        min_coords[0], max_coords[0], resolution[0], dtype=max_coords.dtype
-    )
-    dy = xp.linspace(
-        min_coords[1], max_coords[1], resolution[1], dtype=max_coords.dtype
-    )
-    dz = xp.linspace(
-        min_coords[2], max_coords[2], resolution[2], dtype=max_coords.dtype
-    )
+    # Combine them with meshgrid:
+    xv, yv, zv = torch.meshgrid(*dd)
 
-    xv, yv, zv = xp.meshgrid(dx, dy, dz)
-    xv = xp.expand_dims(xv, -1)
-    yv = xp.expand_dims(yv, -1)
-    zv = xp.expand_dims(zv, -1)
-    grid = xp.concatenate((xv, yv, zv), axis=-1)
-    grid = xp.transpose(grid, (1, 0, 2, 3))
+    xv = xv.unsqueeze(-1)
+    yv = yv.unsqueeze(-1)
+    zv = zv.unsqueeze(-1)
+    grid = torch.concatenate((xv, yv, zv), axis=-1)
     return grid
 
 
