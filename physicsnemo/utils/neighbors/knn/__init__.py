@@ -16,4 +16,3 @@
 
 
 from .knn import knn
-from .radius_search import radius_search
