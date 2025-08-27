@@ -54,7 +54,7 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 
-from physicsnemo.datapipes.cae.domino_datapipe import (
+from physicsnemo.datapipes.cae.domino_datapipe2 import (
     DoMINODataPipe,
     compute_scaling_factors,
     create_domino_dataset,
@@ -88,13 +88,14 @@ def train_epoch(
     print(f"indices: {indices}")
     # If you tell the dataloader the indices in advance, it will preload
     # and pre-preprocess data
-    dataloader.set_indices(indices)
+    # dataloader.set_indices(indices)
 
     gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
     start_time = time.perf_counter()
     for i_batch, sample_batched in enumerate(dataloader):
         # sampled_batched = dict_to_device(sample_batched, device)
-
+        # if i_batch == 7:
+        # break
         # for key in sampled_batched.keys():
         #     print(f"{key}: {sampled_batched[key].shape}")
 
@@ -232,14 +233,15 @@ def main(cfg: DictConfig) -> None:
         logger.info(f"Device {dist.device}, epoch {epoch}:")
 
         epoch_start_time = time.perf_counter()
-        train_epoch(
-            dataloader=train_dataset,
-            sampler=train_sampler,
-            logger=logger,
-            gpu_handle=gpu_handle,
-            epoch_index=epoch,
-            device=dist.device,
-        )
+        with Profiler():
+            train_epoch(
+                dataloader=train_dataset,
+                sampler=train_sampler,
+                logger=logger,
+                gpu_handle=gpu_handle,
+                epoch_index=epoch,
+                device=dist.device,
+            )
         epoch_end_time = time.perf_counter()
         logger.info(
             f"Device {dist.device}, Epoch {epoch} took {epoch_end_time - epoch_start_time:.3f} seconds"
@@ -247,4 +249,7 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    # Profiler().enable("torch")
+    # Profiler().initialize()
     main()
+    # Profiler().finalize()
