@@ -175,7 +175,7 @@ def signed_distance_field(
         )
 
     # Unflatten the output to be like the input:
-    sdf = sdf.reshape(input_shape[:-1] + (1,))
+    sdf = sdf.reshape(input_shape[:-1])
     sdf_hit_point = sdf_hit_point.reshape(input_shape)
 
     return sdf.to(input_points.dtype), sdf_hit_point.to(input_points.dtype)

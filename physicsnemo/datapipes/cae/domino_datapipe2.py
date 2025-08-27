@@ -300,8 +300,8 @@ class DoMINODataPipe(Dataset):
         self.keys_to_read = ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas"]
 
         self.keys_to_read_if_available = {
-            "global_params_values": torch.tensor([30.0, 1.226], device=self.device),
-            "global_params_reference": torch.tensor([30.0, 1.226], device=self.device),
+            "global_params_values": torch.tensor([[30.0], [1.226]], device=self.device),
+            "global_params_reference": torch.tensor([[30.0], [1.226]], device=self.device),
         }
 
         self.volume_keys = ["volume_mesh_centers", "volume_fields"]
@@ -389,7 +389,6 @@ class DoMINODataPipe(Dataset):
             surf_grid,
             use_sign_winding_number=True,
         )
-        sdf_surf_grid = surf_grid
 
         if self.config.sampling:
             geometry_points = self.config.geom_points_sample
@@ -497,12 +496,14 @@ class DoMINODataPipe(Dataset):
             pos_normals_com_surface = pos_normals_com_surface[idx_surface]
 
             # Now, perform the kNN on the sampled points:
+            print(self.config.num_surface_neighbors)
             if self.config.num_surface_neighbors > 1:
                 neighbor_indices, neighbor_distances = knn(
                     points=surface_coordinates,
                     queries=surface_coordinates_sampled,
                     k=self.config.num_surface_neighbors,
                 )
+                print(f"datapipe neighbor_indices: {neighbor_indices.shape}")
 
                 # Pull out the neighbor elements.  Note that ii is the index into the original
                 # points - but only exists for the sampled points
@@ -529,7 +530,7 @@ class DoMINODataPipe(Dataset):
                 queries=surface_coordinates,
                 k=self.config.num_surface_neighbors,
             )
-
+            print(f"datapipe neighbor_indices: {neighbor_indices.shape}")
             # Construct the neighbors arrays:
             surface_neighbors = surface_coordinates[neighbor_indices][:, 1:]
             surface_neighbors_normals = surface_normals[neighbor_indices][:, 1:]
@@ -755,6 +756,7 @@ class DoMINODataPipe(Dataset):
                 mesh_indices_flattened=mesh_indices_flattened,
             )
             return_dict["surf_grid"] = surf_grid
+            print(f"datapipe sdf_surf_grid: {sdf_surf_grid.shape}")
             return_dict["sdf_surf_grid"] = sdf_surf_grid
             return_dict["geometry_coordinates"] = geom_centers
 
