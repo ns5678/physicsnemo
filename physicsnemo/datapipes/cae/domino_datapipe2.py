@@ -38,7 +38,7 @@ from omegaconf import DictConfig
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from physicsnemo.datapipes.cae.drivaer_ml_datapipe import (
+from physicsnemo.datapipes.cae.drivaer_ml_dataset import (
     DrivaerMLDataset,
     compute_mean_std_min_max,
 )
@@ -742,7 +742,7 @@ class DoMINODataPipe(Dataset):
             return_dict.update(
                 {
                     "length_scale": length_scale,
-                    "surf_grid_max_min": surf_grid_max_min,
+                    "surface_min_max": surf_grid_max_min,
                 }
             )
 
@@ -754,6 +754,7 @@ class DoMINODataPipe(Dataset):
                 stl_vertices=data_dict["stl_coordinates"],
                 mesh_indices_flattened=mesh_indices_flattened,
             )
+            return_dict["surf_grid"] = surf_grid
             return_dict["sdf_surf_grid"] = sdf_surf_grid
             return_dict["geometry_coordinates"] = geom_centers
 

@@ -181,8 +181,8 @@ if TENSORSTORE_AVAILABLE:
 
             self.context = ts.Context(
                 {
-                    "cache_pool": {"total_bytes_limit": 30_000_000},
-                    "data_copy_concurrency": {"limit": 60},
+                    "cache_pool": {"total_bytes_limit": 10_000_000},
+                    "data_copy_concurrency": {"limit": 72},
                 }
             )
 
