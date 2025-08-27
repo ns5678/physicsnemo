@@ -2,3 +2,4 @@ torchinfo
 warp-lang
 tensorboard
 cuml
+einops
