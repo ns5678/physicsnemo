@@ -145,9 +145,9 @@ def signed_distance_field(
         wp.init()
 
         # zero copy the vertices, indices, and input points to warp:
-        wp_vertices = wp.from_torch(mesh_vertices, dtype=wp.vec3)
-        wp_indices = wp.from_torch(mesh_indices, dtype=wp.int32)
-        wp_input_points = wp.from_torch(input_points, dtype=wp.vec3)
+        wp_vertices = wp.from_torch(mesh_vertices.to(torch.float32), dtype=wp.vec3)
+        wp_indices = wp.from_torch(mesh_indices.to(torch.int32), dtype=wp.int32)
+        wp_input_points = wp.from_torch(input_points.to(torch.float32), dtype=wp.vec3)
 
         # Convert output points:
         wp_sdf = wp.from_torch(sdf, dtype=wp.float32)
@@ -178,7 +178,7 @@ def signed_distance_field(
     sdf = sdf.reshape(input_shape[:-1] + (1,))
     sdf_hit_point = sdf_hit_point.reshape(input_shape)
 
-    return sdf, sdf_hit_point
+    return sdf.to(input_points.dtype), sdf_hit_point.to(input_points.dtype)
 
 
 @signed_distance_field.register_fake
