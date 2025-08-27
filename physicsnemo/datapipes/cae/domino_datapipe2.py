@@ -496,14 +496,12 @@ class DoMINODataPipe(Dataset):
             pos_normals_com_surface = pos_normals_com_surface[idx_surface]
 
             # Now, perform the kNN on the sampled points:
-            print(self.config.num_surface_neighbors)
             if self.config.num_surface_neighbors > 1:
                 neighbor_indices, neighbor_distances = knn(
                     points=surface_coordinates,
                     queries=surface_coordinates_sampled,
                     k=self.config.num_surface_neighbors,
                 )
-                print(f"datapipe neighbor_indices: {neighbor_indices.shape}")
 
                 # Pull out the neighbor elements.  Note that ii is the index into the original
                 # points - but only exists for the sampled points
@@ -660,7 +658,8 @@ class DoMINODataPipe(Dataset):
             volume_coordinates,
             use_sign_winding_number=True,
         )
-
+        sdf_nodes = sdf_nodes.reshape((-1, 1))
+        
         if self.config.positional_encoding:
             pos_normals_closest_vol = calculate_normal_positional_encoding(
                 volume_coordinates,
@@ -756,7 +755,7 @@ class DoMINODataPipe(Dataset):
                 mesh_indices_flattened=mesh_indices_flattened,
             )
             return_dict["surf_grid"] = surf_grid
-            print(f"datapipe sdf_surf_grid: {sdf_surf_grid.shape}")
+
             return_dict["sdf_surf_grid"] = sdf_surf_grid
             return_dict["geometry_coordinates"] = geom_centers
 
@@ -788,15 +787,17 @@ class DoMINODataPipe(Dataset):
                 )
                 return_dict.update(surface_dict)
 
-            if self.device.type == "cuda":
-                self._preprocess_events[idx] = torch.cuda.Event()
-                self._preprocess_events[idx].record(self.preprocess_stream)
-
             # Mark all cuda tensors to be consumed on the main stream:
             if self.device.type == "cuda":
                 for key in return_dict.keys():
                     if isinstance(return_dict[key], torch.Tensor):
                         return_dict[key].record_stream(torch.cuda.default_stream())
+
+
+            if self.device.type == "cuda":
+                self._preprocess_events[idx] = torch.cuda.Event()
+                self._preprocess_events[idx].record(self.preprocess_stream)
+
 
         return return_dict
 
@@ -825,6 +826,9 @@ class DoMINODataPipe(Dataset):
         if idx in self._preprocess_events:
             torch.cuda.current_stream().wait_event(self._preprocess_events[idx])
             self._preprocess_events.pop(idx)
+
+        # Add a batch dimension to the data_dict
+        data_dict = {k: v.unsqueeze(0) for k, v in data_dict.items()}
 
         return data_dict
 

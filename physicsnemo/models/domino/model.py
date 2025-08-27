@@ -157,6 +157,8 @@ class BQWarp(nn.Module):
         batch_size = x.shape[0]
         nx, ny, nz = self.grid_resolution
 
+        print(f"p_grid shape: {p_grid.shape}")
+        print(f"x shape: {x.shape}")
         p_grid = torch.reshape(p_grid, (batch_size, nx * ny * nz, 3))
 
         if reverse_mapping:
