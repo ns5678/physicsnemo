@@ -232,8 +232,10 @@ class DoMINODataPipe(Dataset):
         if self.config.gpu_preprocessing or self.config.gpu_output:
             # Make sure we move data to the right device:
             target_device = dist.device
+            self.preprocess_stream = torch.cuda.Stream()
         else:
             target_device = torch.device("cpu")
+            self.preprocess_stream = None
 
         self.device = target_device
 
@@ -319,23 +321,28 @@ class DoMINODataPipe(Dataset):
             data_dir=self.config.data_path,
             keys_to_read=self.keys_to_read,
             output_device=self.device,
+            consumer_stream=self.preprocess_stream,
         )
 
         # This is thread storage for data preprocessing:
         self._preprocess_queue = {}
         self._preprocess_events = {}
         self.preprocess_depth = 2
-        self.preprocess_executor = ThreadPoolExecutor(max_workers=2)
+        self.preprocess_executor = ThreadPoolExecutor(max_workers=1)
 
     def set_indices(self, indices: list[int]):
         """
         Set the indices for the dataset for this epoch.
         """
+
+        # TODO - this needs to block while anything is in the preprocess queue.
+
         self.indices = indices
 
     def __len__(self):
         return len(self.dataset)
 
+    @torch.compile(dynamic=True)
     def compute_stl_scaling(
         self, stl_vertices: torch.Tensor, bounding_box_dims_surf: torch.Tensor | None
     ):
@@ -382,6 +389,7 @@ class DoMINODataPipe(Dataset):
             surf_grid,
             use_sign_winding_number=True,
         )
+        sdf_surf_grid = surf_grid
 
         if self.config.sampling:
             geometry_points = self.config.geom_points_sample
@@ -398,7 +406,7 @@ class DoMINODataPipe(Dataset):
 
         return (sdf_surf_grid, geom_centers)
 
-    @profile
+    @torch.compile(dynamic=True)
     def process_surface(
         self,
         s_min: torch.Tensor,
@@ -467,19 +475,9 @@ class DoMINODataPipe(Dataset):
 
             if self.config.surface_sampling_algorithm == "area_weighted":
                 weights = surface_sizes
-                # (
-                #     surface_coordinates_sampled,
-                #     idx_surface,
-                # ) = area_weighted_shuffle_array(
-                #     surface_coordinates,
-                #     self.config.surface_points_sample,
-                #     surface_sizes,
-                # )
+
             else:
                 weights = None
-                # surface_coordinates_sampled, idx_surface = shuffle_array(
-                #     surface_coordinates, self.config.surface_points_sample
-                # )
 
             surface_coordinates_sampled, idx_surface = shuffle_array(
                 surface_coordinates,
@@ -497,20 +495,6 @@ class DoMINODataPipe(Dataset):
             # Select out the sampled points for non-neighbor arrays:
             surface_fields = surface_fields[idx_surface]
             pos_normals_com_surface = pos_normals_com_surface[idx_surface]
-
-            # Perform a kNN on the full set of points vs. sampled points
-            # to select the neighbors:
-            # if self.config.num_surface_neighbors > 1:
-            #     if self.array_provider == cp:
-            #         knn = cuml.neighbors.NearestNeighbors(
-            #             n_neighbors=self.config.num_surface_neighbors,
-            #             algorithm="rbc",
-            #         )
-            #         knn.fit(surface_coordinates)
-            #     else:
-            #         # Under the hood this is instantiating a KDTree.
-            #         # aka here knn is a type, not a class, technically.
-            #         interp_func = KDTree(surface_coordinates)
 
             # Now, perform the kNN on the sampled points:
             if self.config.num_surface_neighbors > 1:
@@ -585,7 +569,7 @@ class DoMINODataPipe(Dataset):
 
         return return_dict
 
-    @profile
+    @torch.compile(dynamic=True)
     def process_volume(
         self,
         s_min: torch.Tensor,
@@ -663,11 +647,7 @@ class DoMINODataPipe(Dataset):
                     mode="constant",
                     value=-10.0,
                 )
-                # volume_coordinates_sampled = pad(
-                #     volume_coordinates_sampled,
-                #     self.config.volume_points_sample,
-                #     pad_value=-10.0,
-                # )
+
             volume_fields = volume_fields[idx_volume]
             volume_coordinates = volume_coordinates_sampled
 
@@ -726,76 +706,94 @@ class DoMINODataPipe(Dataset):
         return return_dict
 
     @profile
-    def process_data(self, data_dict):
-        # Start building the preprocessed return dict:
-        return_dict = {
-            "global_params_values": data_dict["global_params_values"],
-            "global_params_reference": data_dict["global_params_reference"],
-        }
+    def process_data(self, data_dict, idx: int):
+        for key in self.keys_to_read_if_available.keys():
+            if key not in data_dict:
+                data_dict[key] = self.keys_to_read_if_available[key]
 
-        # This function gets information about the surface scale,
-        # and decides what the surface grid will be:
-        (s_min, s_max, length_scale, surf_grid_max_min, surf_grid) = (
-            self.compute_stl_scaling(
-                data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
-            )
-        )
+        with torch.cuda.stream(self.preprocess_stream):
+            if self.config.deterministic:
+                torch.manual_seed(idx)
 
-        # This is a center of mass computation for the stl surface,
-        # using the size of each mesh point as weight.
-
-        center_of_mass = calculate_center_of_mass(
-            data_dict["stl_centers"], data_dict["stl_areas"]
-        )
-
-        # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
-        mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
-
-        return_dict.update(
-            {
-                "length_scale": length_scale,
-                "surf_grid_max_min": surf_grid_max_min,
+            # Start building the preprocessed return dict:
+            return_dict = {
+                "global_params_values": data_dict["global_params_values"],
+                "global_params_reference": data_dict["global_params_reference"],
             }
-        )
 
-        # This will compute the sdf on the surface grid and apply downsampling if needed
-        sdf_surf_grid, geom_centers = self.preprocess_combined(
-            s_min,
-            s_max,
-            surf_grid,
-            stl_vertices=data_dict["stl_coordinates"],
-            mesh_indices_flattened=mesh_indices_flattened,
-        )
-        return_dict["sdf_surf_grid"] = sdf_surf_grid
-        return_dict["geometry_coordinates"] = geom_centers
+            # This function gets information about the surface scale,
+            # and decides what the surface grid will be:
+            (s_min, s_max, length_scale, surf_grid_max_min, surf_grid) = (
+                self.compute_stl_scaling(
+                    data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
+                )
+            )
 
-        # Up to here works all in torch!
+            # This is a center of mass computation for the stl surface,
+            # using the size of each mesh point as weight.
 
-        if self.model_type == "volume" or self.model_type == "combined":
-            volume_dict = self.preprocess_volume(
+            center_of_mass = calculate_center_of_mass(
+                data_dict["stl_centers"], data_dict["stl_areas"]
+            )
+
+            # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
+            mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
+
+            return_dict.update(
+                {
+                    "length_scale": length_scale,
+                    "surf_grid_max_min": surf_grid_max_min,
+                }
+            )
+
+            # This will compute the sdf on the surface grid and apply downsampling if needed
+            sdf_surf_grid, geom_centers = self.process_combined(
                 s_min,
                 s_max,
-                volume_coordinates=data_dict["volume_mesh_centers"],
-                volume_fields=data_dict["volume_fields"],
+                surf_grid,
                 stl_vertices=data_dict["stl_coordinates"],
                 mesh_indices_flattened=mesh_indices_flattened,
-                center_of_mass=center_of_mass,
             )
+            return_dict["sdf_surf_grid"] = sdf_surf_grid
+            return_dict["geometry_coordinates"] = geom_centers
 
-            return_dict.update(volume_dict)
+            # Up to here works all in torch!
 
-        if self.model_type == "surface" or self.model_type == "combined":
-            surface_dict = self.preprocess_surface(
-                s_min,
-                s_max,
-                center_of_mass,
-                surf_grid,
-                surface_coordinates=data_dict["surface_mesh_centers"],
-                surface_normals=data_dict["surface_normals"],
-                surface_sizes=data_dict["surface_areas"],
-                surface_fields=data_dict["surface_fields"],
-            )
-            return_dict.update(surface_dict)
+            if self.model_type == "volume" or self.model_type == "combined":
+                volume_dict = self.process_volume(
+                    s_min,
+                    s_max,
+                    volume_coordinates=data_dict["volume_mesh_centers"],
+                    volume_fields=data_dict["volume_fields"],
+                    stl_vertices=data_dict["stl_coordinates"],
+                    mesh_indices_flattened=mesh_indices_flattened,
+                    center_of_mass=center_of_mass,
+                )
+
+                return_dict.update(volume_dict)
+
+            if self.model_type == "surface" or self.model_type == "combined":
+                surface_dict = self.process_surface(
+                    s_min,
+                    s_max,
+                    center_of_mass,
+                    surf_grid,
+                    surface_coordinates=data_dict["surface_mesh_centers"],
+                    surface_normals=data_dict["surface_normals"],
+                    surface_sizes=data_dict["surface_areas"],
+                    surface_fields=data_dict["surface_fields"],
+                )
+                return_dict.update(surface_dict)
+
+            if self.device.type == "cuda":
+                self._preprocess_events[idx] = torch.cuda.Event()
+                self._preprocess_events[idx].record(self.preprocess_stream)
+
+            # Mark all cuda tensors to be consumed on the main stream:
+            if self.device.type == "cuda":
+                for key in return_dict.keys():
+                    if isinstance(return_dict[key], torch.Tensor):
+                        return_dict[key].record_stream(torch.cuda.default_stream())
 
         return return_dict
 
@@ -808,138 +806,111 @@ class DoMINODataPipe(Dataset):
         are relatively large due to the mesh size.
         """
 
-        if self.config.deterministic:
-            torch.manual_seed(idx)
+        index = self.idx_to_index(idx)
 
+        # Get the preprocessed data:
+        data_dict = self.get_preprocessed(idx)
+        if data_dict is None:
+            # If no preprocessing was done for this index, process it now
+
+            # Get the data from the dataset.
+            # Under the hood, this may be fetching preloaded data.
+            data_dict = self.dataset[index]
+            data_dict = self.process_data(data_dict, idx)
+
+        # This blocks the main stream until the preprocessing has transferred to GPU
+        if idx in self._preprocess_events:
+            torch.cuda.current_stream().wait_event(self._preprocess_events[idx])
+            self._preprocess_events.pop(idx)
+
+        return data_dict
+
+    def idx_to_index(self, idx):
         if hasattr(self, "indices"):
-            index = self.indices[idx]
-        else:
-            index = idx
+            return self.indices[idx]
 
-        data_dict = self.dataset[index]
+        return idx
 
-        for key in self.keys_to_read_if_available.keys():
-            if key not in data_dict:
-                data_dict[key] = self.keys_to_read_if_available[key]
+    def preprocess(self, idx: int) -> None:
+        """
+        Start preprocessing for the given index (1 step ahead).
+        This processes preloaded data or loads it if not available.
+        """
+        if idx in self._preprocess_queue:
+            # Skip items that are already being preprocessed
+            return
 
-        return_dict = self.process_data(data_dict)
+        def _preprocess_worker():
+            index = self.idx_to_index(idx)
+            # Try to get preloaded data first
+            data_dict = self.dataset[index]
+            # Process the data
+            return self.process_data(data_dict, idx)
 
-        return return_dict
+        # Submit preprocessing task to thread pool
+        self._preprocess_queue[idx] = self.preprocess_executor.submit(
+            _preprocess_worker
+        )
 
-    # def __getitem__(self, idx: int) -> dict[str, torch.Tensor | ShardTensor]:
-    #     """
-    #     Get a data sample.
+    def get_preprocessed(self, idx: int) -> dict | None:
+        """
+        Retrieve preprocessed data (blocking if not ready).
+        Returns None if no preprocessing is in progress for this index.
+        """
+        if idx not in self._preprocess_queue:
+            return None
 
-    #     Flow is:
-    #     - Read data, or get preloaded data if this idx is preloaded.
-    #     - Move data to GPU, if needed.
-    #         - Preloading data will move to GPU if it can.
-    #     - If domain parallelism is enabled, convert to ShardTensors.
-    #     - Return
+        result = self._preprocess_queue[idx].result()  # Block until ready
+        self._preprocess_queue.pop(idx)  # Clear after getting result
 
-    #     Args:
-    #         idx: Index of the sample to retrieve
+        return result
 
-    #     Returns:
-    #         Dictionary containing tensors/ShardTensors for the requested data
-    #     """
+    def __next__(self):
+        # To iterate through the data efficiently, he have to implement the
+        # following, assuming a steady state
 
-    #     if idx >= len(self._filenames):
-    #         raise IndexError(
-    #             f"Index {idx} out of range for dataset of size {len(self._filenames)}"
-    #         )
+        # - start the dataset loading at idx + 2
+        # - start the preprocessing pipe at idx + 1
+        #   - the preprocessing pipe has to implicitly wait for idx +1 in the dataset
+        # - wait for the preprocessing pipe at idx to finish
+        # return the data.
+        if self.i >= len(self.dataset):
+            self.i = 0
+            raise StopIteration
 
-    #     # Attempt to get preloaded data:
-    #     data = self.get_preloaded(idx)
-    #     if data is None:
-    #         # Read data from zarr file
-    #         data = self._read_file(self._filenames[idx])
-    #         data = self._move_to_gpu(data, idx)
+        current_idx = self.i
 
-    #     # This blocks until the preprocessing has transferred to GPU
-    #     if idx in self._transfer_events:
-    #         torch.cuda.current_stream().wait_event(self._transfer_events[idx])
-    #         self._transfer_events.pop(idx)
+        # Start loading two ahead:
+        if len(self.dataset) >= current_idx + 2:
+            self.dataset.preload(self.idx_to_index(current_idx + 2))
 
-    #     # Convert to ShardTensors if using domain parallelism
-    #     if self.device_mesh is not None:
-    #         data = self._convert_to_shard_tensors(data)
+        # Start preprocessing one ahead:
+        if len(self.dataset) >= current_idx + 1:
+            self.preprocess(current_idx + 1)
 
-    #     return data
+        # If no preprocessing was done for this index, process it now
+        data = self.__getitem__(current_idx)
 
-    # def __iter__(self):
-    #     self.i = 0
-    #     return self
+        self.i += 1
+        return data
 
-    # def __next__(self):
-    #     """
-    #     When used in an iterator context, this datapipe will
-    #     leverage preloading and preprocessing to speed up the data
-    #     loading latency.
+    def __iter__(self):
+        # When starting the iterator method, start loading the data
+        # at idx = 0, idx = 1
+        # Start preprocessing at idx = 0, when the load completes
 
-    #     Each time "next" is called, the datapipe will ask the data
-    #     set to preload the data 2 steps ahead.  It will then ask
-    #     for the data from one step ahead, and start it processing.
+        self.i = 0
 
-    #     Finally, it will return the data from this requested index
-    #     """
-    #     if self.i >= len(self._filenames):
-    #         self.i = 0
-    #         raise StopIteration
+        # Trigger the dataset to start loading index 0:
+        if len(self.dataset) >= 1:
+            self.dataset.preload(self.idx_to_index(self.i))
+        if len(self.dataset) >= 2:
+            self.dataset.preload(self.idx_to_index(self.i + 1))
 
-    #     if self.preload_depth > 0 and self.i + 1 < len(self._filenames):
-    #         self.preload(this_index)
-    #     if self.preload_depth > 1 and self.i + 2 < len(self._filenames):
-    #         self.preload(this_index)
+        # Start preprocessing index 0
+        self.preprocess(self.i)
 
-    #     data = self.__getitem__(this_index)
-
-    #     self.i += 1
-
-    #     return data
-
-    # def preprocess(self, idx: int) -> None:
-    #     """
-    #     Asynchronously preload the data for the given index (up to CPU, not GPU).
-    #     Only one preload operation is supported at a time.
-
-    #     Args:
-    #         idx: Index of the sample to preload.
-    #     """
-    #     if idx in self._preload_queue:
-    #         # Skip items that are already in the queue
-    #         return
-
-    #     def _preload_worker():
-    #         try:
-    #             data = self._read_file(self._filenames[idx])
-    #             # Convert to torch tensors
-    #             return self._move_to_gpu(data, idx)
-    #         except Exception as e:
-    #             print(f"Exception in preload: {e}")
-    #             raise e
-
-    #     self._preload_queue[idx] = self.preload_executor.submit(_preload_worker)
-
-    # def get_preloaded(self, idx: int) -> dict[str, torch.Tensor] | None:
-    #     """
-    #     Retrieve the preloaded data (blocking if not ready).
-
-    #     Returns:
-    #         (idx, data) tuple where data is a dictionary of key to numpy array or torch tensor.
-
-    #     Raises:
-    #         RuntimeError: If no preload is in progress.
-    #         Exception: If preload failed.
-    #     """
-
-    #     if idx not in self._preload_queue:
-    #         return None
-
-    #     result = self._preload_queue[idx].result()  # This will block until the result is ready
-    #     self._preload_queue.pop(idx) # Clear the future after getting the result
-
-    #     return result
+        return self
 
 
 @profile

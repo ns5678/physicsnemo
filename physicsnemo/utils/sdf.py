@@ -67,13 +67,14 @@ def _bvh_query_distance(
     sdf_hit_point[tid] = p_closest
 
 
+@torch.library.custom_op("physicsnemo::signed_distance_field", mutates_args=())
 def signed_distance_field(
     mesh_vertices: torch.Tensor,
     mesh_indices: torch.Tensor,
     input_points: torch.Tensor,
     max_dist: float = 1e8,
     use_sign_winding_number: bool = False,
-):
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Computes the signed distance field (SDF) for a given mesh and input points.
 
@@ -131,23 +132,6 @@ def signed_distance_field(
     sdf = torch.zeros(N, dtype=torch.float32, device=input_points.device)
     sdf_hit_point = torch.zeros(N, 3, dtype=torch.float32, device=input_points.device)
 
-    wp.init()
-
-    # zero copy the vertices, indices, and input points to warp:
-    wp_vertices = wp.from_torch(mesh_vertices, dtype=wp.vec3)
-    wp_indices = wp.from_torch(mesh_indices, dtype=wp.int32)
-    wp_input_points = wp.from_torch(input_points, dtype=wp.vec3)
-
-    # Convert output points:
-    wp_sdf = wp.from_torch(sdf, dtype=wp.float32)
-    wp_sdf_hit_point = wp.from_torch(sdf_hit_point, dtype=wp.vec3f)
-
-    mesh = wp.Mesh(
-        points=wp_vertices,
-        indices=wp_indices,
-        support_winding_number=use_sign_winding_number,
-    )
-
     if input_points.device.type == "cuda":
         wp_launch_stream = wp.stream_from_torch(
             torch.cuda.current_stream(input_points.device)
@@ -157,23 +141,70 @@ def signed_distance_field(
         wp_launch_stream = None
         wp_launch_device = "cpu"  # CPUs have no streams
 
-    wp.launch(
-        kernel=_bvh_query_distance,
-        dim=N,
-        inputs=[
-            mesh.id,
-            wp_input_points,
-            max_dist,
-            wp_sdf,
-            wp_sdf_hit_point,
-            use_sign_winding_number,
-        ],
-        device=wp_launch_device,
-        stream=wp_launch_stream,
-    )
+    with wp.ScopedStream(wp_launch_stream):
+        wp.init()
+
+        # zero copy the vertices, indices, and input points to warp:
+        wp_vertices = wp.from_torch(mesh_vertices, dtype=wp.vec3)
+        wp_indices = wp.from_torch(mesh_indices, dtype=wp.int32)
+        wp_input_points = wp.from_torch(input_points, dtype=wp.vec3)
+
+        # Convert output points:
+        wp_sdf = wp.from_torch(sdf, dtype=wp.float32)
+        wp_sdf_hit_point = wp.from_torch(sdf_hit_point, dtype=wp.vec3f)
+
+        mesh = wp.Mesh(
+            points=wp_vertices,
+            indices=wp_indices,
+            support_winding_number=use_sign_winding_number,
+        )
+
+        wp.launch(
+            kernel=_bvh_query_distance,
+            dim=N,
+            inputs=[
+                mesh.id,
+                wp_input_points,
+                max_dist,
+                wp_sdf,
+                wp_sdf_hit_point,
+                use_sign_winding_number,
+            ],
+            device=wp_launch_device,
+            stream=wp_launch_stream,
+        )
 
     # Unflatten the output to be like the input:
     sdf = sdf.reshape(input_shape[:-1] + (1,))
     sdf_hit_point = sdf_hit_point.reshape(input_shape)
 
     return sdf, sdf_hit_point
+
+
+@signed_distance_field.register_fake
+def _(
+    mesh_vertices: torch.Tensor,
+    mesh_indices: torch.Tensor,
+    input_points: torch.Tensor,
+    max_dist: float = 1e8,
+    use_sign_winding_number: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if mesh_vertices.device != input_points.device:
+        raise RuntimeError("mesh_vertices and input_points must be on the same device")
+
+    if mesh_vertices.device != mesh_indices.device:
+        raise RuntimeError("mesh_vertices and mesh_indices must be on the same device")
+
+    if mesh_vertices.shape[0] != mesh_indices.shape[0]:
+        raise RuntimeError(
+            "mesh_vertices and mesh_indices must have the same number of points"
+        )
+
+    N = input_points.shape[0]
+
+    sdf_output = torch.empty(N, 1, device=input_points.device, dtype=input_points.dtype)
+    sdf_hit_point_output = torch.empty(
+        N, 3, device=input_points.device, dtype=input_points.dtype
+    )
+
+    return sdf_output, sdf_hit_point_output
