@@ -301,7 +301,9 @@ class DoMINODataPipe(Dataset):
 
         self.keys_to_read_if_available = {
             "global_params_values": torch.tensor([[30.0], [1.226]], device=self.device),
-            "global_params_reference": torch.tensor([[30.0], [1.226]], device=self.device),
+            "global_params_reference": torch.tensor(
+                [[30.0], [1.226]], device=self.device
+            ),
         }
 
         self.volume_keys = ["volume_mesh_centers", "volume_fields"]
@@ -659,7 +661,7 @@ class DoMINODataPipe(Dataset):
             use_sign_winding_number=True,
         )
         sdf_nodes = sdf_nodes.reshape((-1, 1))
-        
+
         if self.config.positional_encoding:
             pos_normals_closest_vol = calculate_normal_positional_encoding(
                 volume_coordinates,
@@ -793,11 +795,9 @@ class DoMINODataPipe(Dataset):
                     if isinstance(return_dict[key], torch.Tensor):
                         return_dict[key].record_stream(torch.cuda.default_stream())
 
-
             if self.device.type == "cuda":
                 self._preprocess_events[idx] = torch.cuda.Event()
                 self._preprocess_events[idx].record(self.preprocess_stream)
-
 
         return return_dict
 
