@@ -41,7 +41,7 @@ import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 import torch.distributed as dist
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -54,7 +54,7 @@ from physicsnemo.distributed import DistributedManager
 from physicsnemo.launch.utils import load_checkpoint, save_checkpoint
 from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 
-from physicsnemo.datapipes.cae.domino_datapipe import (
+from physicsnemo.datapipes.cae.domino_datapipe2 import (
     DoMINODataPipe,
     compute_scaling_factors,
     create_domino_dataset,
@@ -73,7 +73,7 @@ nvmlInit()
 from physicsnemo.utils.profiling import profile, Profiler
 
 
-# Profiler().enable("line_profiler")
+# Profiler().enable("torch")
 # Profiler().initialize()
 
 
@@ -620,8 +620,8 @@ def validation_step(
     with torch.no_grad():
         for i_batch, sample_batched in enumerate(dataloader):
             sampled_batched = dict_to_device(sample_batched, device)
-
-            with autocast(enabled=True):
+            print(f"validation i batch {i_batch}")
+            with autocast("cuda", enabled=True):
                 if add_physics_loss:
                     prediction_vol, prediction_surf = model(
                         sampled_batched, return_volume_neighbors=True
@@ -680,70 +680,75 @@ def train_epoch(
 
     gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
     start_time = time.perf_counter()
-    for i_batch, sample_batched in enumerate(dataloader):
-        sampled_batched = dict_to_device(sample_batched, device)
+    with Profiler():
+        for i_batch, sample_batched in enumerate(dataloader):
+            sampled_batched = dict_to_device(sample_batched, device)
 
-        if add_physics_loss:
-            autocast_enabled = False
-        else:
-            autocast_enabled = True
-        with autocast(enabled=autocast_enabled):
-            with nvtx.range("Model Forward Pass"):
-                if add_physics_loss:
-                    prediction_vol, prediction_surf = model(
-                        sampled_batched, return_volume_neighbors=True
-                    )
-                else:
-                    prediction_vol, prediction_surf = model(sampled_batched)
+            if add_physics_loss:
+                autocast_enabled = False
+            else:
+                autocast_enabled = True
+            with autocast("cuda", enabled=autocast_enabled):
+                with nvtx.range("Model Forward Pass"):
+                    if add_physics_loss:
+                        prediction_vol, prediction_surf = model(
+                            sampled_batched, return_volume_neighbors=True
+                        )
+                    else:
+                        prediction_vol, prediction_surf = model(sampled_batched)
 
-            loss, loss_dict = compute_loss_dict(
-                prediction_vol,
-                prediction_surf,
-                sampled_batched,
-                loss_fn_type,
-                integral_scaling_factor,
-                surf_loss_scaling,
-                vol_loss_scaling,
-                first_deriv,
-                eqn,
-                bounding_box,
-                vol_factors,
-                add_physics_loss,
+                loss, loss_dict = compute_loss_dict(
+                    prediction_vol,
+                    prediction_surf,
+                    sampled_batched,
+                    loss_fn_type,
+                    integral_scaling_factor,
+                    surf_loss_scaling,
+                    vol_loss_scaling,
+                    first_deriv,
+                    eqn,
+                    bounding_box,
+                    vol_factors,
+                    add_physics_loss,
+                )
+
+            loss = loss / loss_interval
+            scaler.scale(loss).backward()
+
+            if ((i_batch + 1) % loss_interval == 0) or (i_batch + 1 == len(dataloader)):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            # Gather data and report
+            running_loss += loss.item()
+            elapsed_time = time.perf_counter() - start_time
+            start_time = time.perf_counter()
+            gpu_end_info = nvmlDeviceGetMemoryInfo(gpu_handle)
+            gpu_memory_used = gpu_end_info.used / (1024**3)
+            gpu_memory_delta = (gpu_end_info.used - gpu_start_info.used) / (1024**3)
+
+            logging_string = f"Device {device}, batch processed: {i_batch + 1}\n"
+            # Format the loss dict into a string:
+            loss_string = (
+                "  "
+                + "\t".join(
+                    [f"{key.replace('loss_', ''):<10}" for key in loss_dict.keys()]
+                )
+                + "\n"
+            )
+            loss_string += (
+                "  "
+                + f"\t".join([f"{l.item():<10.3e}" for l in loss_dict.values()])
+                + "\n"
             )
 
-        loss = loss / loss_interval
-        scaler.scale(loss).backward()
-
-        if ((i_batch + 1) % loss_interval == 0) or (i_batch + 1 == len(dataloader)):
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-
-        # Gather data and report
-        running_loss += loss.item()
-        elapsed_time = time.perf_counter() - start_time
-        start_time = time.perf_counter()
-        gpu_end_info = nvmlDeviceGetMemoryInfo(gpu_handle)
-        gpu_memory_used = gpu_end_info.used / (1024**3)
-        gpu_memory_delta = (gpu_end_info.used - gpu_start_info.used) / (1024**3)
-
-        logging_string = f"Device {device}, batch processed: {i_batch + 1}\n"
-        # Format the loss dict into a string:
-        loss_string = (
-            "  "
-            + "\t".join([f"{key.replace('loss_', ''):<10}" for key in loss_dict.keys()])
-            + "\n"
-        )
-        loss_string += (
-            "  " + f"\t".join([f"{l.item():<10.3e}" for l in loss_dict.values()]) + "\n"
-        )
-
-        logging_string += loss_string
-        logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb\n"
-        logging_string += f"  GPU memory delta: {gpu_memory_delta:.3f} Gb\n"
-        logging_string += f"  Time taken: {elapsed_time:.2f} seconds\n"
-        logger.info(logging_string)
-        gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
+            logging_string += loss_string
+            logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb\n"
+            logging_string += f"  GPU memory delta: {gpu_memory_delta:.3f} Gb\n"
+            logging_string += f"  Time taken: {elapsed_time:.2f} seconds\n"
+            logger.info(logging_string)
+            gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
 
     last_loss = running_loss / (i_batch + 1)  # loss per batch
     if dist.rank == 0:
@@ -904,7 +909,7 @@ def main(cfg: DictConfig) -> None:
         global_features=num_global_features,
         model_parameters=cfg.model,
     ).to(dist.device)
-    model = torch.compile(model, disable=True)  # TODO make this configurable
+    # model = torch.compile(model, fullgraph=True, dynamic=True)  # TODO make this configurable
 
     # Print model summary (structure and parmeter count).
     logger.info(f"Model summary:\n{torchinfo.summary(model, verbose=0, depth=2)}\n")
@@ -999,7 +1004,7 @@ def main(cfg: DictConfig) -> None:
         model.train(True)
         epoch_start_time = time.perf_counter()
         avg_loss = train_epoch(
-            dataloader=train_dataloader,
+            dataloader=train_dataset,
             model=model,
             optimizer=optimizer,
             scaler=scaler,
@@ -1026,7 +1031,7 @@ def main(cfg: DictConfig) -> None:
 
         model.eval()
         avg_vloss = validation_step(
-            dataloader=val_dataloader,
+            dataloader=val_dataset,
             model=model,
             device=dist.device,
             logger=logger,
@@ -1088,4 +1093,7 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    # Profiler().enable("torch")
+    # Profiler().initialize()
     main()
+    # Profiler().finalize()
