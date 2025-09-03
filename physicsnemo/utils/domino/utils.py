@@ -19,49 +19,15 @@ Utilities for data processing and training with the DoMINO model architecture.
 
 This module provides essential utilities for computational fluid dynamics data processing,
 mesh manipulation, field normalization, and geometric computations. It supports both
-CPU (NumPy) and GPU (CuPy) operations with automatic fallbacks.
+torch.Tensor operations on either CPU or GPU.
 """
 
 from pathlib import Path
 from typing import Any, Sequence
 
-import numpy as np
 import torch
-from scipy.spatial import KDTree
 
-# Type alias for arrays that can be either NumPy or CuPy
-try:
-    import cupy as cp
-
-    ArrayType = np.ndarray | cp.ndarray
-except ImportError:
-    ArrayType = np.ndarray
-
-
-def array_type(array: ArrayType) -> "type[np] | type[cp]":
-    """Determine the array module (NumPy or CuPy) for the given array.
-
-    This function enables array-agnostic code by returning the appropriate
-    array module that can be used for operations on the input array.
-
-    Args:
-        array: Input array that can be either NumPy or CuPy array.
-
-    Returns:
-        The array module (numpy or cupy) corresponding to the input array type.
-
-    Examples:
-        >>> import numpy as np
-        >>> arr = np.array([1, 2, 3])
-        >>> xp = array_type(arr)
-        >>> result = xp.sum(arr)  # Uses numpy.sum
-    """
-    try:
-        import cupy as cp
-
-        return cp.get_array_module(array)
-    except ImportError:
-        return np
+from physicsnemo.utils.neighbors import knn
 
 
 def calculate_center_of_mass(
@@ -73,13 +39,13 @@ def calculate_center_of_mass(
     in computational fluid dynamics for mesh analysis and load balancing.
 
     Args:
-        centers: Array of shape (n_elements, 3) containing the centroid
+        centers: torch.Tensor of shape (n_elements, 3) containing the centroid
             coordinates of each element.
-        sizes: Array of shape (n_elements,) containing the volume
+        sizes: torch.Tensor of shape (n_elements,) containing the volume
             or area of each element used as weights.
 
     Returns:
-        Array of shape (1, 3) containing the x, y, z coordinates of the center of mass.
+        torch.Tensor of shape (1, 3) containing the x, y, z coordinates of the center of mass.
 
     Raises:
         ValueError: If centers and sizes have incompatible shapes.
@@ -111,7 +77,7 @@ def normalize(
     ensure numerical stability and faster convergence.
 
     Args:
-        field: Input field array to be normalized.
+        field: Input field tensor to be normalized.
         max_val: Maximum values for normalization, can be scalar or array.
             If None, computed from the field data.
         min_val: Minimum values for normalization, can be scalar or array.
@@ -136,9 +102,9 @@ def normalize(
     """
 
     if max_val is None:
-        max_val = field.max(axis=0, keepdim=True)
+        max_val, _ = field.max(axis=0, keepdim=True)
     if min_val is None:
-        min_val = field.min(axis=0, keepdim=True)
+        min_val, _ = field.min(axis=0, keepdim=True)
 
     field_range = max_val - min_val
     return 2.0 * (field - min_val) / field_range - 1.0
@@ -183,7 +149,7 @@ def standardize(
     when the data follows a normal distribution.
 
     Args:
-        field: Input field array to be standardized.
+        field: Input field tensor to be standardized.
         mean: Mean values for standardization. If None, computed from field data.
         std: Standard deviation values for standardization. If None, computed from field data.
 
@@ -242,10 +208,10 @@ def unstandardize(
 
 
 def calculate_normal_positional_encoding(
-    coordinates_a: ArrayType,
-    coordinates_b: ArrayType | None = None,
+    coordinates_a: torch.Tensor,
+    coordinates_b: torch.Tensor | None = None,
     cell_dimensions: Sequence[float] = (1.0, 1.0, 1.0),
-) -> ArrayType:
+) -> torch.Tensor:
     """Calculate sinusoidal positional encoding for 3D coordinates.
 
     This function computes transformer-style positional encodings for 3D spatial
@@ -254,51 +220,51 @@ def calculate_normal_positional_encoding(
     unique representations for each spatial position.
 
     Args:
-        coordinates_a: Primary coordinates array of shape (n_points, 3).
+        coordinates_a: Primary coordinates tensor of shape (n_points, 3).
         coordinates_b: Optional secondary coordinates for computing relative positions.
             If provided, the encoding is computed for (coordinates_a - coordinates_b).
         cell_dimensions: Characteristic length scales for x, y, z dimensions used
             for normalization. Defaults to unit dimensions.
 
     Returns:
-        Array of shape (n_points, 12) containing positional encodings with
+        torch.Tensor of shape (n_points, 12) containing positional encodings with
         4 encoding dimensions per spatial axis (x, y, z).
 
     Examples:
-        >>> import numpy as np
-        >>> coords = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+        >>> import torch
+        >>> coords = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
         >>> cell_size = [0.1, 0.1, 0.1]
         >>> encoding = calculate_normal_positional_encoding(coords, cell_dimensions=cell_size)
         >>> encoding.shape
         (2, 12)
         >>> # Relative positioning example
-        >>> coords_b = np.array([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
+        >>> coords_b = torch.tensor([[0.5, 0.5, 0.5], [0.5, 0.5, 0.5]])
         >>> encoding_rel = calculate_normal_positional_encoding(coords, coords_b, cell_size)
         >>> encoding_rel.shape
         (2, 12)
     """
     dx, dy, dz = cell_dimensions[0], cell_dimensions[1], cell_dimensions[2]
-    xp = array_type(coordinates_a)
 
     if coordinates_b is not None:
         normals = coordinates_a - coordinates_b
-        pos_x = xp.asarray(calculate_pos_encoding(normals[:, 0] / dx, d=4))
-        pos_y = xp.asarray(calculate_pos_encoding(normals[:, 1] / dy, d=4))
-        pos_z = xp.asarray(calculate_pos_encoding(normals[:, 2] / dz, d=4))
-        pos_normals = xp.concatenate((pos_x, pos_y, pos_z), axis=0).reshape(-1, 12)
+        pos_x = torch.cat(calculate_pos_encoding(normals[:, 0] / dx, d=4), dim=-1)
+        pos_y = torch.cat(calculate_pos_encoding(normals[:, 1] / dy, d=4), dim=-1)
+        pos_z = torch.cat(calculate_pos_encoding(normals[:, 2] / dz, d=4), dim=-1)
+        pos_normals = torch.cat((pos_x, pos_y, pos_z), dim=0).reshape(-1, 12)
     else:
         normals = coordinates_a
-        pos_x = xp.asarray(calculate_pos_encoding(normals[:, 0] / dx, d=4))
-        pos_y = xp.asarray(calculate_pos_encoding(normals[:, 1] / dy, d=4))
-        pos_z = xp.asarray(calculate_pos_encoding(normals[:, 2] / dz, d=4))
-        pos_normals = xp.concatenate((pos_x, pos_y, pos_z), axis=0).reshape(-1, 12)
+        pos_x = torch.cat(calculate_pos_encoding(normals[:, 0] / dx, d=4), dim=-1)
+        pos_y = torch.cat(calculate_pos_encoding(normals[:, 1] / dy, d=4), dim=-1)
+        pos_z = torch.cat(calculate_pos_encoding(normals[:, 2] / dz, d=4), dim=-1)
+        print(pos_x.shape, pos_y.shape, pos_z.shape)
+        pos_normals = torch.cat((pos_x, pos_y, pos_z), dim=0).reshape(-1, 12)
 
     return pos_normals
 
 
 def nd_interpolator(
-    coordinates: ArrayType, field: ArrayType, grid: ArrayType, k: int = 2
-) -> ArrayType:
+    coordinates: torch.Tensor, field: torch.Tensor, grid: torch.Tensor, k: int = 2
+) -> torch.Tensor:
     """Perform n-dimensional interpolation using k-nearest neighbors.
 
     This function interpolates field values from scattered points to a regular
@@ -306,114 +272,126 @@ def nd_interpolator(
     fields on regular grids from irregular measurement points.
 
     Args:
-        coordinates: Array of shape (n_points, n_dims) containing source point coordinates.
-        field: Array of shape (n_points, n_fields) containing field values at source points.
-        grid: Array of shape (n_field_points, n_dims) containing target grid points for interpolation.
+        coordinates: torch.Tensor of shape (n_points, n_dims) containing source point coordinates.
+        field: torch.Tensor of shape (n_points, n_fields) containing field values at source points.
+        grid: torch.Tensor of shape (n_field_points, n_dims) containing target grid points for interpolation.
         k: Number of nearest neighbors to use for interpolation.
 
     Returns:
         Interpolated field values at grid points using k-nearest neighbor averaging.
 
-    Note:
-        This function currently uses SciPy's KDTree which only supports CPU arrays.
-        A future enhancement could add CuML support for GPU acceleration.
 
     Examples:
-        >>> import numpy as np
+        >>> import torch
         >>> # Simple 2D interpolation example
-        >>> coords = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
-        >>> field_vals = np.array([[1.0], [2.0], [3.0], [4.0]])
-        >>> grid_points = np.array([[0.5, 0.5]])
-        >>> result = nd_interpolator([coords], field_vals, grid_points)
+        >>> coords = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+        >>> field_vals = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+        >>> grid_points = torch.tensor([[0.5, 0.5]])
+        >>> result = nd_interpolator(coords, field_vals, grid_points)
         >>> result.shape[0] == 1  # One grid point
         True
     """
-    # TODO - this function should get updated for cuml if using cupy.
-    kdtree = KDTree(coordinates[0])
-    distances, neighbor_indices = kdtree.query(grid, k=k)
+    neighbor_indices, distances = knn(coordinates, grid, k=k)
 
     field_grid = field[neighbor_indices]
-    field_grid = np.mean(field_grid, axis=1)
+    field_grid = torch.mean(field_grid, dim=1)
     return field_grid
 
 
-def pad(arr: ArrayType, n_points: int, pad_value: float = 0.0) -> ArrayType:
-    """Pad 2D array with constant values to reach target size.
+def pad(arr: torch.Tensor, n_points: int, pad_value: float = 0.0) -> torch.Tensor:
+    """Pad 2D tensor with constant values to reach target size.
 
-    This function extends a 2D array by adding rows filled with a constant
-    value. It's commonly used to standardize array sizes in batch processing
+    This function extends a 2D tensor by adding rows filled with a constant
+    value. It's commonly used to standardize tensor sizes in batch processing
     for machine learning applications.
 
     Args:
-        arr: Input array of shape (n_points, n_features) to be padded.
+        arr: Input tensor of shape (n_points, n_features) to be padded.
         n_points: Target number of points (rows) after padding.
         pad_value: Constant value used for padding. Defaults to 0.0.
 
     Returns:
-        Padded array of shape (n_points, n_features). If n_points <= arr.shape[0],
-        returns the original array unchanged.
+        Padded tensor of shape (n_points, n_features). If n_points <= arr.shape[0],
+        returns the original tensor unchanged.
 
     Examples:
-        >>> import numpy as np
-        >>> arr = np.array([[1.0, 2.0], [3.0, 4.0]])
+        >>> import torch
+        >>> arr = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
         >>> padded = pad(arr, 4, -1.0)
         >>> padded.shape
         (4, 2)
-        >>> np.array_equal(padded[:2], arr)
+        >>> torch.allclose(padded[:2], arr)
         True
-        >>> bool(np.all(padded[2:] == -1.0))
+        >>> bool(torch.all(padded[2:] == -1.0))
         True
         >>> # No padding needed
         >>> same = pad(arr, 2)
-        >>> np.array_equal(same, arr)
+        >>> torch.allclose(same, arr)
         True
     """
-    xp = array_type(arr)
+
     if n_points <= arr.shape[0]:
         return arr
 
-    arr_pad = pad_value * xp.ones(
-        (n_points - arr.shape[0], arr.shape[1]), dtype=xp.float32
+    n_pad = n_points - arr.shape[0]
+    arr_padded = torch.nn.functional.pad(
+        arr,
+        (
+            0,
+            0,
+            0,
+            n_pad,
+        ),
+        mode="constant",
+        value=pad_value,
     )
-    arr_padded = xp.concatenate((arr, arr_pad), axis=0)
     return arr_padded
 
 
-def pad_inp(arr: ArrayType, n_points: int, pad_value: float = 0.0) -> ArrayType:
-    """Pad 3D array with constant values to reach target size.
+def pad_inp(arr: torch.Tensor, n_points: int, pad_value: float = 0.0) -> torch.Tensor:
+    """Pad 3D tensor with constant values to reach target size.
 
-    This function extends a 3D array by adding entries along the first dimension
+    This function extends a 3D tensor by adding entries along the first dimension
     filled with a constant value. Used for standardizing 3D tensor sizes in
     batch processing workflows.
 
     Args:
-        arr: Input array of shape (n_points, height, width) to be padded.
+        arr: Input tensor of shape (n_points, height, width) to be padded.
         n_points: Target number of points along first dimension after padding.
         pad_value: Constant value used for padding. Defaults to 0.0.
 
     Returns:
-        Padded array of shape (n_points, height, width). If n_points <= arr.shape[0],
-        returns the original array unchanged.
+        Padded tensor of shape (n_points, height, width). If n_points <= arr.shape[0],
+        returns the original tensor unchanged.
 
     Examples:
-        >>> import numpy as np
-        >>> arr = np.array([[[1.0, 2.0]], [[3.0, 4.0]]])
+        >>> import torch
+        >>> arr = torch.tensor([[[1.0, 2.0]], [[3.0, 4.0]]])
         >>> padded = pad_inp(arr, 4, 0.0)
         >>> padded.shape
         (4, 1, 2)
-        >>> np.array_equal(padded[:2], arr)
+        >>> torch.allclose(padded[:2], arr)
         True
-        >>> bool(np.all(padded[2:] == 0.0))
+        >>> bool(torch.all(padded[2:] == 0.0))
         True
     """
-    xp = array_type(arr)
     if n_points <= arr.shape[0]:
         return arr
 
-    arr_pad = pad_value * xp.ones(
-        (n_points - arr.shape[0], arr.shape[1], arr.shape[2]), dtype=xp.float32
+    n_pad = n_points - arr.shape[0]
+    arr_padded = torch.nn.functional.pad(
+        arr,
+        (
+            0,
+            0,
+            0,
+            0,
+            0,
+            n_pad,
+        ),
+        mode="constant",
+        value=pad_value,
     )
-    arr_padded = xp.concatenate((arr, arr_pad), axis=0)
     return arr_padded
 
 
@@ -423,9 +401,9 @@ def shuffle_array(
     weights: torch.Tensor = None,
 ):
     """
-    Randomly sample points from array without replacement.
+    Randomly sample points from tensor without replacement.
 
-    This function performs random sampling from the input array, selecting
+    This function performs random sampling from the input tensor, selecting
     n_points points without replacement. It's commonly used for creating training
     subsets and data augmentation in machine learning workflows.
 
@@ -435,14 +413,14 @@ def shuffle_array(
     If the input is larger than that, it will be split and sampled from each chunk.
 
     Args:
-        arr: Input array to sample from, shape (n_points, ...).
+        points: Input tensor to sample from, shape (n_points, ...).
         n_points: Number of points to sample. If greater than arr.shape[0],
             all points are returned.
         weights: Optional weights for sampling. If None, uniform weights are used.
 
     Returns:
         Tuple containing:
-        - Sampled array subset
+        - Sampled tensor subset
         - Indices of the selected points
 
     Examples:
@@ -454,7 +432,7 @@ def shuffle_array(
         (2, 2)
         >>> indices.shape
         (2,)
-        >>> len(np.unique(indices)) == 2  # No duplicates
+        >>> len(torch.unique(indices)) == 2  # No duplicates
         True
     """
 
@@ -514,62 +492,21 @@ def shuffle_array(
     return points_selected, idx
 
 
-# @profile
-# def shuffle_array(
-#     arr: ArrayType,
-#     n_points: int,
-# ) -> tuple[ArrayType, ArrayType]:
-#     """Randomly sample points from array without replacement.
-
-#     This function performs random sampling from the input array, selecting
-#     n_points points without replacement. It's commonly used for creating training
-#     subsets and data augmentation in machine learning workflows.
-
-#     Args:
-#         arr: Input array to sample from, shape (n_points, ...).
-#         n_points: Number of points to sample. If greater than arr.shape[0],
-#             all points are returned.
-
-#     Returns:
-#         Tuple containing:
-#         - Sampled array subset
-#         - Indices of the selected points
-
-#     Examples:
-#         >>> import numpy as np
-#         >>> np.random.seed(42)  # For reproducible results
-#         >>> data = np.array([[1, 2], [3, 4], [5, 6], [7, 8]])
-#         >>> subset, indices = shuffle_array(data, 2)
-#         >>> subset.shape
-#         (2, 2)
-#         >>> indices.shape
-#         (2,)
-#         >>> len(np.unique(indices)) == 2  # No duplicates
-#         True
-#     """
-#     xp = array_type(arr)
-#     if n_points > arr.shape[0]:
-#         # If asking too many points, truncate the ask but still shuffle.
-#         n_points = arr.shape[0]
-#     idx = xp.random.choice(arr.shape[0], size=n_points, replace=False)
-#     return arr[idx], idx
-
-
 def shuffle_array_without_sampling(
     arr: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Shuffle array order without changing the number of elements.
+    """Shuffle tensor order without changing the number of elements.
 
-    This function reorders all elements in the array randomly while preserving
+    This function reorders all elements in the tensor randomly while preserving
     all data points. It's useful for randomizing data order before training
     while maintaining the complete dataset.
 
     Args:
-        arr: Input array to shuffle, shape (n_points, ...).
+        arr: Input tensor to shuffle, shape (n_points, ...).
 
     Returns:
         Tuple containing:
-        - Shuffled array with same shape as input
+        - Shuffled tensor with same shape as input
         - Permutation indices used for shuffling
 
     Examples:
@@ -636,7 +573,7 @@ def get_filenames(filepath: str | Path, exclude_dirs: bool = False) -> list[str]
     return filenames
 
 
-def calculate_pos_encoding(nx: ArrayType, d: int = 8) -> list[ArrayType]:
+def calculate_pos_encoding(nx: torch.Tensor, d: int = 8) -> list[torch.Tensor]:
     """Calculate sinusoidal positional encoding for transformer architectures.
 
     This function computes positional encodings using alternating sine and cosine
@@ -648,12 +585,12 @@ def calculate_pos_encoding(nx: ArrayType, d: int = 8) -> list[ArrayType]:
         d: Encoding dimensionality. Must be even number. Defaults to 8.
 
     Returns:
-        List of d arrays containing alternating sine and cosine encodings.
+        List of d tensors containing alternating sine and cosine encodings.
         Each pair (sin, cos) uses progressively lower frequencies.
 
     Examples:
-        >>> import numpy as np
-        >>> positions = np.array([0.0, 1.0, 2.0])
+        >>> import torch
+        >>> positions = torch.tensor([0.0, 1.0, 2.0])
         >>> encodings = calculate_pos_encoding(positions, d=4)
         >>> len(encodings)
         4
@@ -661,10 +598,9 @@ def calculate_pos_encoding(nx: ArrayType, d: int = 8) -> list[ArrayType]:
         True
     """
     vec = []
-    xp = array_type(nx)
     for k in range(int(d / 2)):
-        vec.append(xp.sin(nx / 10000 ** (2 * k / d)))
-        vec.append(xp.cos(nx / 10000 ** (2 * k / d)))
+        vec.append(torch.sin(nx / 10000 ** (2 * k / d)))
+        vec.append(torch.cos(nx / 10000 ** (2 * k / d)))
     return vec
 
 
@@ -715,7 +651,7 @@ def create_grid(
         resolution: Number of grid points [nx, ny, nz] in each dimension.
 
     Returns:
-        Grid array of shape (nx, ny, nz, 3) containing 3D coordinates for each
+        Grid tensor of shape (nx, ny, nz, 3) containing 3D coordinates for each
         grid point. The last dimension contains [x, y, z] coordinates.
 
     Examples:
@@ -754,7 +690,7 @@ def create_grid(
 
 
 def mean_std_sampling(
-    field: ArrayType, mean: ArrayType, std: ArrayType, tolerance: float = 3.0
+    field: torch.Tensor, mean: torch.Tensor, std: torch.Tensor, tolerance: float = 3.0
 ) -> list[int]:
     """Identify outlier points based on statistical distance from mean.
 
@@ -763,7 +699,7 @@ def mean_std_sampling(
     It's useful for data cleaning and identifying regions of interest in CFD data.
 
     Args:
-        field: Input field array of shape (n_points, n_components).
+        field: Input field tensor of shape (n_points, n_components).
         mean: Mean values for each field component, shape (n_components,).
         std: Standard deviation for each component, shape (n_components,).
         tolerance: Number of standard deviations to use as outlier threshold.
@@ -773,20 +709,20 @@ def mean_std_sampling(
         List of indices identifying outlier points that exceed the statistical threshold.
 
     Examples:
-        >>> import numpy as np
+        >>> import torch
         >>> # Create test data with outliers
-        >>> field = np.array([[1.0], [2.0], [3.0], [10.0]])  # 10.0 is outlier
-        >>> field_mean = np.array([2.0])
-        >>> field_std = np.array([1.0])
+        >>> field = torch.tensor([[1.0], [2.0], [3.0], [10.0]])  # 10.0 is outlier
+        >>> field_mean = torch.tensor([2.0])
+        >>> field_std = torch.tensor([1.0])
         >>> outliers = mean_std_sampling(field, field_mean, field_std, 2.0)
         >>> 3 in outliers  # Index 3 (value 10.0) should be detected as outlier
         True
     """
-    xp = array_type(field)
+
     idx_all = []
     for v in range(field.shape[-1]):
         fv = field[:, v]
-        idx = xp.where(
+        idx = torch.where(
             (fv > mean[v] + tolerance * std[v]) | (fv < mean[v] - tolerance * std[v])
         )
         if len(idx[0]) != 0:
@@ -830,16 +766,16 @@ def dict_to_device(
 
 
 def area_weighted_shuffle_array(
-    arr: ArrayType, n_points: int, area: ArrayType, area_factor: float = 1.0
-) -> tuple[ArrayType, ArrayType]:
-    """Perform area-weighted random sampling from array.
+    arr: torch.Tensor, n_points: int, area: torch.Tensor, area_factor: float = 1.0
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Perform area-weighted random sampling from tensor.
 
-    This function samples points from an array with probability proportional to
+    This function samples points from a tensor with probability proportional to
     their associated area weights. This is particularly useful in CFD applications
     where larger cells or surface elements should have higher sampling probability.
 
     Args:
-        arr: Input array to sample from, shape (n_points, ...).
+        arr: Input tensor to sample from, shape (n_points, ...).
         n_points: Number of points to sample. If greater than arr.shape[0],
             samples all available points.
         area: Area weights for each point, shape (n_points,). Larger values
@@ -850,19 +786,18 @@ def area_weighted_shuffle_array(
 
     Returns:
         Tuple containing:
-        - Sampled array subset weighted by area
+        - Sampled tensor subset weighted by area
         - Indices of the selected points
 
     Note:
-        For GPU arrays (CuPy), the sampling is performed on CPU due to memory
-        efficiency considerations. The Alias method could be implemented for
-        future GPU acceleration.
+        For GPU tensors, the sampling is performed on the current device.
+        The sampling uses torch.multinomial for efficient weighted sampling.
 
     Examples:
-        >>> import numpy as np
-        >>> np.random.seed(42)  # For reproducible results
-        >>> mesh_data = np.array([[1.0], [2.0], [3.0], [4.0]])
-        >>> cell_areas = np.array([0.1, 0.1, 0.1, 10.0])  # Last point has much larger area
+        >>> import torch
+        >>> torch.manual_seed(42)  # For reproducible results
+        >>> mesh_data = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+        >>> cell_areas = torch.tensor([0.1, 0.1, 0.1, 10.0])  # Last point has much larger area
         >>> subset, indices = area_weighted_shuffle_array(mesh_data, 2, cell_areas)
         >>> subset.shape
         (2, 1)
@@ -874,40 +809,28 @@ def area_weighted_shuffle_array(
         >>> # Use higher area_factor for stronger bias toward large areas
         >>> subset_biased, _ = area_weighted_shuffle_array(mesh_data, 2, cell_areas, area_factor=2.0)
     """
-    xp = array_type(arr)
+
     # Calculate area-weighted probabilities
     sampling_probabilities = area**area_factor
-    sampling_probabilities /= xp.sum(sampling_probabilities)  # Normalize to sum to 1
+    sampling_probabilities /= sampling_probabilities.sum()  # Normalize to sum to 1
 
-    # Ensure we don't request more points than available
-    n_points = min(n_points, arr.shape[0])
-
-    # Create index array for all available points
-    point_indices = xp.arange(arr.shape[0])
-
-    if xp != np:
-        point_indices = point_indices.get()
-        sampling_probabilities = sampling_probabilities.get()
-
-    selected_indices = np.random.choice(
-        point_indices, n_points, p=sampling_probabilities
-    )
-    selected_indices = xp.asarray(selected_indices)
-
-    return arr[selected_indices], selected_indices
+    return shuffle_array(arr, n_points, sampling_probabilities)
 
 
 def solution_weighted_shuffle_array(
-    arr: ArrayType, n_points: int, solution: ArrayType, scaling_factor: float = 1.0
-) -> tuple[ArrayType, ArrayType]:
-    """Perform solution-weighted random sampling from array.
+    arr: torch.Tensor,
+    n_points: int,
+    solution: torch.Tensor,
+    scaling_factor: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Perform solution-weighted random sampling from tensor.
 
-    This function samples points from an array with probability proportional to
+    This function samples points from a tensor with probability proportional to
     their associated solution weights. This is particularly useful in CFD applications
     where larger cells or surface elements should have higher sampling probability.
 
     Args:
-        arr: Input array to sample from, shape (n_points, ...).
+        arr: Input tensor to sample from, shape (n_points, ...).
         n_points: Number of points to sample. If greater than arr.shape[0],
             samples all available points.
         solution: Solution weights for each point, shape (n_points,). Larger values
@@ -918,19 +841,18 @@ def solution_weighted_shuffle_array(
 
     Returns:
         Tuple containing:
-        - Sampled array subset weighted by solution fields
+        - Sampled tensor subset weighted by solution fields
         - Indices of the selected points
 
     Note:
-        For GPU arrays (CuPy), the sampling is performed on CPU due to memory
-        efficiency considerations. The Alias method could be implemented for
-        future GPU acceleration.
+        For GPU tensors, the sampling is performed on the current device.
+        The sampling uses torch.multinomial for efficient weighted sampling.
 
     Examples:
-        >>> import numpy as np
-        >>> np.random.seed(42)  # For reproducible results
-        >>> mesh_data = np.array([[1.0], [2.0], [3.0], [4.0]])
-        >>> solution = np.array([0.1, 0.1, 0.1, 10.0])  # Last point has much larger solution field
+        >>> import torch
+        >>> torch.manual_seed(42)  # For reproducible results
+        >>> mesh_data = torch.tensor([[1.0], [2.0], [3.0], [4.0]])
+        >>> solution = torch.tensor([0.1, 0.1, 0.1, 10.0])  # Last point has much larger solution field
         >>> subset, indices = solution_weighted_shuffle_array(mesh_data, 2, solution)
         >>> subset.shape
         (2, 1)
@@ -942,24 +864,9 @@ def solution_weighted_shuffle_array(
         >>> # Use higher scaling_factor for stronger bias toward large solution fields
         >>> subset_biased, _ = solution_weighted_shuffle_array(mesh_data, 2, solution, scaling_factor=2.0)
     """
-    xp = array_type(arr)
+
     # Calculate solution-weighted probabilities
     sampling_probabilities = solution**scaling_factor
-    sampling_probabilities /= xp.sum(sampling_probabilities)  # Normalize to sum to 1
+    sampling_probabilities /= sampling_probabilities.sum()  # Normalize to sum to 1
 
-    # Ensure we don't request more points than available
-    n_points = min(n_points, arr.shape[0])
-
-    # Create index array for all available points
-    point_indices = xp.arange(arr.shape[0])
-
-    if xp != np:
-        point_indices = point_indices.get()
-        sampling_probabilities = sampling_probabilities.get()
-
-    selected_indices = np.random.choice(
-        point_indices, n_points, p=sampling_probabilities
-    )
-    selected_indices = xp.asarray(selected_indices)
-
-    return arr[selected_indices], selected_indices
+    return shuffle_array(arr, n_points, sampling_probabilities)

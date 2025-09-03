@@ -292,6 +292,7 @@ class DrivaerMLDataset:
 
         self.output_device = output_device
         if output_device.type == "cuda":
+            # self._data_loader_stream = torch.cuda.default_stream()
             self._data_loader_stream = torch.cuda.Stream()
         else:
             self._data_loader_stream = None
@@ -362,10 +363,11 @@ class DrivaerMLDataset:
                 # Move to GPU if available
                 result[key] = data[key].to(self.output_device, non_blocking=True)
                 result[key].record_stream(self.consumer_stream)
-            # Mark the consumer stream:
-            transfer_event = torch.cuda.Event()
-            transfer_event.record(self._data_loader_stream)
-            # result.set_event("transfer", transfer_event)
+
+        # Mark the consumer stream:
+        transfer_event = torch.cuda.Event()
+        transfer_event.record(self._data_loader_stream)
+        self._transfer_events[idx] = transfer_event
 
         return result
 

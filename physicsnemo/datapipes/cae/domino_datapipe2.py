@@ -45,7 +45,6 @@ from physicsnemo.datapipes.cae.drivaer_ml_dataset import (
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.utils.domino.utils import (
     ArrayType,
-    area_weighted_shuffle_array,
     calculate_center_of_mass,
     calculate_normal_positional_encoding,
     create_grid,
@@ -232,10 +231,8 @@ class DoMINODataPipe(Dataset):
         if self.config.gpu_preprocessing or self.config.gpu_output:
             # Make sure we move data to the right device:
             target_device = dist.device
-            self.preprocess_stream = torch.cuda.Stream()
         else:
             target_device = torch.device("cpu")
-            self.preprocess_stream = None
 
         self.device = target_device
 
@@ -323,7 +320,7 @@ class DoMINODataPipe(Dataset):
             data_dir=self.config.data_path,
             keys_to_read=self.keys_to_read,
             output_device=self.device,
-            consumer_stream=self.preprocess_stream,
+            consumer_stream=torch.cuda.default_stream(),
         )
 
         # This is thread storage for data preprocessing:
@@ -344,7 +341,6 @@ class DoMINODataPipe(Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    @torch.compile(dynamic=True)
     def compute_stl_scaling(
         self, stl_vertices: torch.Tensor, bounding_box_dims_surf: torch.Tensor | None
     ):
@@ -407,7 +403,6 @@ class DoMINODataPipe(Dataset):
 
         return (sdf_surf_grid, geom_centers)
 
-    @torch.compile(dynamic=True)
     def process_surface(
         self,
         s_min: torch.Tensor,
@@ -530,7 +525,7 @@ class DoMINODataPipe(Dataset):
                 queries=surface_coordinates,
                 k=self.config.num_surface_neighbors,
             )
-            print(f"datapipe neighbor_indices: {neighbor_indices.shape}")
+
             # Construct the neighbors arrays:
             surface_neighbors = surface_coordinates[neighbor_indices][:, 1:]
             surface_neighbors_normals = surface_normals[neighbor_indices][:, 1:]
@@ -570,7 +565,6 @@ class DoMINODataPipe(Dataset):
 
         return return_dict
 
-    @torch.compile(dynamic=True)
     def process_volume(
         self,
         s_min: torch.Tensor,
@@ -707,101 +701,89 @@ class DoMINODataPipe(Dataset):
 
         return return_dict
 
-    @profile
+    @torch.no_grad()
     def process_data(self, data_dict, idx: int):
         for key in self.keys_to_read_if_available.keys():
             if key not in data_dict:
                 data_dict[key] = self.keys_to_read_if_available[key]
 
-        with torch.cuda.stream(self.preprocess_stream):
-            if self.config.deterministic:
-                torch.manual_seed(idx)
+        if self.config.deterministic:
+            torch.manual_seed(idx)
 
-            # Start building the preprocessed return dict:
-            return_dict = {
-                "global_params_values": data_dict["global_params_values"],
-                "global_params_reference": data_dict["global_params_reference"],
+        # Start building the preprocessed return dict:
+        return_dict = {
+            "global_params_values": data_dict["global_params_values"],
+            "global_params_reference": data_dict["global_params_reference"],
+        }
+
+        # This function gets information about the surface scale,
+        # and decides what the surface grid will be:
+        (s_min, s_max, length_scale, surf_grid_max_min, surf_grid) = (
+            self.compute_stl_scaling(
+                data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
+            )
+        )
+
+        # This is a center of mass computation for the stl surface,
+        # using the size of each mesh point as weight.
+
+        center_of_mass = calculate_center_of_mass(
+            data_dict["stl_centers"], data_dict["stl_areas"]
+        )
+
+        # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
+        mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
+
+        return_dict.update(
+            {
+                "length_scale": length_scale,
+                "surface_min_max": surf_grid_max_min,
             }
+        )
 
-            # This function gets information about the surface scale,
-            # and decides what the surface grid will be:
-            (s_min, s_max, length_scale, surf_grid_max_min, surf_grid) = (
-                self.compute_stl_scaling(
-                    data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
-                )
-            )
+        # This will compute the sdf on the surface grid and apply downsampling if needed
+        sdf_surf_grid, geom_centers = self.process_combined(
+            s_min,
+            s_max,
+            surf_grid,
+            stl_vertices=data_dict["stl_coordinates"],
+            mesh_indices_flattened=mesh_indices_flattened,
+        )
+        return_dict["surf_grid"] = surf_grid
 
-            # This is a center of mass computation for the stl surface,
-            # using the size of each mesh point as weight.
+        return_dict["sdf_surf_grid"] = sdf_surf_grid
+        return_dict["geometry_coordinates"] = geom_centers
 
-            center_of_mass = calculate_center_of_mass(
-                data_dict["stl_centers"], data_dict["stl_areas"]
-            )
+        # Up to here works all in torch!
 
-            # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
-            mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
-
-            return_dict.update(
-                {
-                    "length_scale": length_scale,
-                    "surface_min_max": surf_grid_max_min,
-                }
-            )
-
-            # This will compute the sdf on the surface grid and apply downsampling if needed
-            sdf_surf_grid, geom_centers = self.process_combined(
+        if self.model_type == "volume" or self.model_type == "combined":
+            volume_dict = self.process_volume(
                 s_min,
                 s_max,
-                surf_grid,
+                volume_coordinates=data_dict["volume_mesh_centers"],
+                volume_fields=data_dict["volume_fields"],
                 stl_vertices=data_dict["stl_coordinates"],
                 mesh_indices_flattened=mesh_indices_flattened,
+                center_of_mass=center_of_mass,
             )
-            return_dict["surf_grid"] = surf_grid
 
-            return_dict["sdf_surf_grid"] = sdf_surf_grid
-            return_dict["geometry_coordinates"] = geom_centers
+            return_dict.update(volume_dict)
 
-            # Up to here works all in torch!
-
-            if self.model_type == "volume" or self.model_type == "combined":
-                volume_dict = self.process_volume(
-                    s_min,
-                    s_max,
-                    volume_coordinates=data_dict["volume_mesh_centers"],
-                    volume_fields=data_dict["volume_fields"],
-                    stl_vertices=data_dict["stl_coordinates"],
-                    mesh_indices_flattened=mesh_indices_flattened,
-                    center_of_mass=center_of_mass,
-                )
-
-                return_dict.update(volume_dict)
-
-            if self.model_type == "surface" or self.model_type == "combined":
-                surface_dict = self.process_surface(
-                    s_min,
-                    s_max,
-                    center_of_mass,
-                    surf_grid,
-                    surface_coordinates=data_dict["surface_mesh_centers"],
-                    surface_normals=data_dict["surface_normals"],
-                    surface_sizes=data_dict["surface_areas"],
-                    surface_fields=data_dict["surface_fields"],
-                )
-                return_dict.update(surface_dict)
-
-            # Mark all cuda tensors to be consumed on the main stream:
-            if self.device.type == "cuda":
-                for key in return_dict.keys():
-                    if isinstance(return_dict[key], torch.Tensor):
-                        return_dict[key].record_stream(torch.cuda.default_stream())
-
-            if self.device.type == "cuda":
-                self._preprocess_events[idx] = torch.cuda.Event()
-                self._preprocess_events[idx].record(self.preprocess_stream)
+        if self.model_type == "surface" or self.model_type == "combined":
+            surface_dict = self.process_surface(
+                s_min,
+                s_max,
+                center_of_mass,
+                surf_grid,
+                surface_coordinates=data_dict["surface_mesh_centers"],
+                surface_normals=data_dict["surface_normals"],
+                surface_sizes=data_dict["surface_areas"],
+                surface_fields=data_dict["surface_fields"],
+            )
+            return_dict.update(surface_dict)
 
         return return_dict
 
-    @profile
     def __getitem__(self, idx):
         """
         Function for fetching and processing a single file's data.
@@ -821,11 +803,6 @@ class DoMINODataPipe(Dataset):
             # Under the hood, this may be fetching preloaded data.
             data_dict = self.dataset[index]
             data_dict = self.process_data(data_dict, idx)
-
-        # This blocks the main stream until the preprocessing has transferred to GPU
-        if idx in self._preprocess_events:
-            torch.cuda.current_stream().wait_event(self._preprocess_events[idx])
-            self._preprocess_events.pop(idx)
 
         # Add a batch dimension to the data_dict
         data_dict = {k: v.unsqueeze(0) for k, v in data_dict.items()}
@@ -889,11 +866,8 @@ class DoMINODataPipe(Dataset):
 
         # Start loading two ahead:
         if len(self.dataset) >= current_idx + 2:
+            self.dataset.preload(self.idx_to_index(current_idx + 1))
             self.dataset.preload(self.idx_to_index(current_idx + 2))
-
-        # Start preprocessing one ahead:
-        if len(self.dataset) >= current_idx + 1:
-            self.preprocess(current_idx + 1)
 
         # If no preprocessing was done for this index, process it now
         data = self.__getitem__(current_idx)
@@ -914,13 +888,9 @@ class DoMINODataPipe(Dataset):
         if len(self.dataset) >= 2:
             self.dataset.preload(self.idx_to_index(self.i + 1))
 
-        # Start preprocessing index 0
-        self.preprocess(self.i)
-
         return self
 
 
-@profile
 def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -> None:
     # Create a dataset for just the field keys:
 
@@ -1038,10 +1008,10 @@ class CachedDoMINODataset(Dataset):
         # Sample surface points if present
         if "surface_mesh_centers" in result and self.surface_points:
             if self.surface_sampling_algorithm == "area_weighted":
-                coords_sampled, idx_surface = area_weighted_shuffle_array(
-                    result["surface_mesh_centers"],
-                    self.surface_points,
-                    result["surface_areas"],
+                coords_sampled, idx_surface = shuffle_array(
+                    points=result["surface_mesh_centers"],
+                    n_points=self.surface_points,
+                    weights=result["surface_areas"],
                 )
             else:
                 coords_sampled, idx_surface = shuffle_array(

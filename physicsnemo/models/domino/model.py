@@ -155,11 +155,8 @@ class BQWarp(nn.Module):
                 - outputs: Tensor containing coordinates of the neighboring points
         """
         batch_size = x.shape[0]
-        nx, ny, nz = self.grid_resolution
 
-        print(f"p_grid shape: {p_grid.shape}")
-        print(f"x shape: {x.shape}")
-        p_grid = torch.reshape(p_grid, (batch_size, nx * ny * nz, 3))
+        p_grid = p_grid.reshape(batch_size, -1, 3)
 
         if reverse_mapping:
             mapping, outputs = radius_search(
@@ -594,15 +591,23 @@ class GeometryRep(nn.Module):
         if self.geo_encoding_type == "both" or self.geo_encoding_type == "stl":
             # Calculate multi-scale geoemtry dependency
             x_encoding = []
+
             for j in range(len(self.radii)):
-                mapping, k_short = self.bq_warp[j](x, p_grid)
-                x_encoding_inter = self.geo_conv_out[j](k_short, p_grid)
-                # Propagate information in the geometry enclosed BBox
-                for _ in range(self.hops):
-                    dx = self.geo_processors[j](x_encoding_inter) / self.hops
-                    x_encoding_inter = x_encoding_inter + dx
-                x_encoding_inter = self.geo_processor_out[j](x_encoding_inter)
-                x_encoding.append(x_encoding_inter)
+                with torch.autograd.profiler.record_function(f"bq_warp_{j}"):
+                    mapping, k_short = self.bq_warp[j](x, p_grid)
+                    x_encoding_inter = self.geo_conv_out[j](k_short, p_grid)
+                    # Propagate information in the geometry enclosed BBox
+                    for _i in range(self.hops):
+                        with torch.autograd.profiler.record_function(
+                            f"geo_processor_{j}_{_i}"
+                        ):
+                            dx = self.geo_processors[j](x_encoding_inter) / self.hops
+                            x_encoding_inter = x_encoding_inter + dx
+                    x_encoding_inter = self.geo_processor_out[j](x_encoding_inter)
+
+                    x_encoding.append(x_encoding_inter)
+
+            # current_stream.
             x_encoding = torch.cat(x_encoding, dim=1)
 
         if self.geo_encoding_type == "both" or self.geo_encoding_type == "sdf":
@@ -1661,6 +1666,7 @@ class DoMINO(nn.Module):
         return_volume_neighbors=False,
     ):
         """Function to approximate solution sampling the neighborhood information"""
+
         if eval_mode == "volume":
             num_variables = self.num_variables_vol
             nn_basis = self.nn_basis_vol
