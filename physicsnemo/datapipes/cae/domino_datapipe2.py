@@ -44,7 +44,6 @@ from physicsnemo.datapipes.cae.drivaer_ml_dataset import (
 )
 from physicsnemo.distributed import DistributedManager
 from physicsnemo.utils.domino.utils import (
-    ArrayType,
     calculate_center_of_mass,
     calculate_normal_positional_encoding,
     create_grid,
@@ -64,8 +63,8 @@ class BoundingBox(Protocol):
     Type definition for the required format of bounding box dimensions.
     """
 
-    min: ArrayType
-    max: ArrayType
+    min: Sequence
+    max: Sequence
 
 
 @dataclass
@@ -149,7 +148,7 @@ class DoMINODataConfig:
     volume_factors: Optional[Sequence] = None
     bounding_box_dims: Optional[Union[BoundingBox, Sequence]] = None
 
-    grid_resolution: Union[Sequence, ArrayType] = (256, 96, 64)
+    grid_resolution: Sequence = (256, 96, 64)
     normalize_coordinates: bool = False
     sample_in_bbox: bool = False
     sampling: bool = False

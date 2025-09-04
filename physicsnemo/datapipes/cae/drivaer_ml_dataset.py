@@ -265,6 +265,7 @@ class DrivaerMLDataset:
         keys_to_read: list[str] | None,
         output_device: torch.device,
         preload_depth: int = 2,
+        pin_memory: bool = True,
         device_mesh: torch.distributed.DeviceMesh | None = None,
         placements: dict[str, torch.distributed.tensor.Placement] | None = None,
         consumer_stream: torch.cuda.Stream | None = None,
@@ -284,6 +285,8 @@ class DrivaerMLDataset:
         self.file_reader, self._filenames = self._infer_file_type_and_filenames(
             data_dir
         )
+
+        self.pin_memory = pin_memory
 
         # Check the file names; some can be read well in parallel, while others
         # are not parallelizable.
@@ -360,8 +363,14 @@ class DrivaerMLDataset:
 
         with torch.cuda.stream(self._data_loader_stream):
             for key in data.keys():
+                if self.pin_memory:
+                    result[key] = (
+                        data[key].pin_memory().to(self.output_device, non_blocking=True)
+                    )
+                else:
+                    result[key] = data[key].to(self.output_device, non_blocking=True)
                 # Move to GPU if available
-                result[key] = data[key].to(self.output_device, non_blocking=True)
+                # result[key] = data[key].to(self.output_device, non_blocking=True)
                 result[key].record_stream(self.consumer_stream)
 
         # Mark the consumer stream:
