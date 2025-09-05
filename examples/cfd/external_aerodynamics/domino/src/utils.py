@@ -14,6 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from dataclasses import dataclass
+from typing import Dict, Optional, Any
+import numpy as np
+import torch
+import pickle
+from pathlib import Path
+from typing import Literal
+
 
 def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]):
     """Calculate the number of variables for volume, surface, and global features.
@@ -72,3 +80,83 @@ def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]
             raise ValueError(f"Unknown global parameter type")
 
     return num_vol_vars, num_surf_vars, num_global_features
+
+
+@dataclass
+class ScalingFactors:
+    """
+    Data structure for storing scaling factors computed for DoMINO datasets.
+
+    This class provides a clean, easily serializable format for storing
+    mean, std, min, and max values for different array keys in the dataset.
+    Uses numpy arrays for easy serialization and cross-platform compatibility.
+
+    Attributes:
+        mean: Dictionary mapping keys to mean numpy arrays
+        std: Dictionary mapping keys to standard deviation numpy arrays
+        min_val: Dictionary mapping keys to minimum value numpy arrays
+        max_val: Dictionary mapping keys to maximum value numpy arrays
+        field_keys: List of field keys for which statistics were computed
+    """
+
+    mean: Dict[str, np.ndarray]
+    std: Dict[str, np.ndarray]
+    min_val: Dict[str, np.ndarray]
+    max_val: Dict[str, np.ndarray]
+    field_keys: list[str]
+
+    def to_torch(
+        self, device: Optional[torch.device] = None
+    ) -> Dict[str, Dict[str, torch.Tensor]]:
+        """Convert numpy arrays to torch tensors for use in training/inference."""
+        device = device or torch.device("cpu")
+
+        return {
+            "mean": {k: torch.from_numpy(v).to(device) for k, v in self.mean.items()},
+            "std": {k: torch.from_numpy(v).to(device) for k, v in self.std.items()},
+            "min_val": {
+                k: torch.from_numpy(v).to(device) for k, v in self.min_val.items()
+            },
+            "max_val": {
+                k: torch.from_numpy(v).to(device) for k, v in self.max_val.items()
+            },
+        }
+
+    def save(self, filepath: str | Path) -> None:
+        """Save scaling factors to pickle file."""
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, filepath: str | Path) -> "ScalingFactors":
+        """Load scaling factors from pickle file."""
+        with open(filepath, "rb") as f:
+            factors = pickle.load(f)
+        return factors
+
+    def get_field_shapes(self) -> Dict[str, tuple]:
+        """Get the shape of each field's statistics."""
+        return {key: self.mean[key].shape for key in self.field_keys}
+
+    def summary(self) -> str:
+        """Generate a human-readable summary of the scaling factors."""
+        summary = ["Scaling Factors Summary:"]
+        summary.append(f"Field Keys: {self.field_keys}")
+
+        for key in self.field_keys:
+            mean_val = self.mean[key]
+            std_val = self.std[key]
+            min_val = self.min_val[key]
+            max_val = self.max_val[key]
+
+            summary.append(f"\n{key}:")
+            summary.append(f"  Shape: {mean_val.shape}")
+            summary.append(f"  Mean: {mean_val}")
+            summary.append(f"  Std: {std_val}")
+            summary.append(f"  Min: {min_val}")
+            summary.append(f"  Max: {max_val}")
+
+        return "\n".join(summary)

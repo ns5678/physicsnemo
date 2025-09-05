@@ -56,11 +56,12 @@ from physicsnemo.launch.logging import PythonLogger, RankZeroLoggingWrapper
 
 from physicsnemo.datapipes.cae.domino_datapipe2 import (
     DoMINODataPipe,
-    compute_scaling_factors,
     create_domino_dataset,
 )
 from physicsnemo.models.domino.model import DoMINO
 from physicsnemo.utils.domino.utils import *
+
+from utils import ScalingFactors
 
 # This is included for GPU memory tracking:
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
@@ -266,30 +267,17 @@ def main(cfg: DictConfig) -> None:
     logger.info(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
 
     ################################
-    # Get or compute scaling and normalization factors
-    # min/max/mean/std of input points + targets
+    # Get scaling factors
     ################################
+    pickle_path = os.path.join(cfg.output) + "/scaling_factors/scaling_factors.pkl"
 
-    vol_save_path = os.path.join(
-        "outputs", cfg.project.name, "volume_scaling_factors.npy"
-    )
-    surf_save_path = os.path.join(
-        "outputs", cfg.project.name, "surface_scaling_factors.npy"
-    )
-    if os.path.exists(vol_save_path):
-        vol_factors = np.load(vol_save_path)
-        vol_factors_tensor = (
-            torch.from_numpy(vol_factors).to(dist.device) if add_physics_loss else None
+    try:
+        scaling_factors = ScalingFactors.load(pickle_path)
+        logger.info(f"Scaling factors loaded from: {pickle_path}")
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Scaling factors not found at: {pickle_path}; please run compute_statistics.py to compute them."
         )
-    else:
-        vol_factors = None
-        vol_factors_tensor = None
-
-    scaling_factors = compute_scaling_factors(
-        cfg=cfg,
-        input_path=cfg.data.input_dir,
-        use_cache=cfg.data_processor.use_cache,
-    )
 
     model_type = cfg.model.model_type
 
@@ -315,6 +303,10 @@ def main(cfg: DictConfig) -> None:
     else:
         volume_variable_names = []
 
+    vol_factors = scaling_factors.mean["volume_fields"]
+    surf_factors = scaling_factors.mean["surface_fields"]
+    vol_factors_tensor = torch.from_numpy(vol_factors).to(dist.device)
+
     bounding_box = None
     if add_physics_loss:
         bounding_box = cfg.data.bounding_box
@@ -325,11 +317,6 @@ def main(cfg: DictConfig) -> None:
             .to(vol_factors_tensor.dtype)
             .to(dist.device)
         )
-
-    if os.path.exists(surf_save_path):
-        surf_factors = np.load(surf_save_path)
-    else:
-        surf_factors = None
 
     train_dataset = create_domino_dataset(
         cfg,

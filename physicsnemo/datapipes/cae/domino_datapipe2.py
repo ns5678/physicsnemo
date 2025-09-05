@@ -217,6 +217,7 @@ class DoMINODataPipe(Dataset):
         self,
         input_path,
         model_type: Literal["surface", "volume", "combined"],
+        pin_memory: bool = False,
         **data_config_overrides,
     ):
         # Perform config packaging and validation
@@ -227,13 +228,13 @@ class DoMINODataPipe(Dataset):
             DistributedManager.initialize()
 
         dist = DistributedManager()
-        if self.config.gpu_preprocessing or self.config.gpu_output:
-            # Make sure we move data to the right device:
-            target_device = dist.device
-        else:
-            target_device = torch.device("cpu")
 
-        self.device = target_device
+        self.preproc_device = (
+            dist.device if self.config.gpu_preprocessing else torch.device("cpu")
+        )
+        self.output_device = (
+            dist.device if self.config.gpu_output else torch.device("cpu")
+        )
 
         self.model_type = model_type
 
@@ -244,12 +245,12 @@ class DoMINODataPipe(Dataset):
             self.config.bounding_box_dims = [
                 torch.tensor(
                     self.config.bounding_box_dims.max,
-                    device=self.device,
+                    device=self.preproc_device,
                     dtype=torch.float32,
                 ),
                 torch.tensor(
                     self.config.bounding_box_dims.min,
-                    device=self.device,
+                    device=self.preproc_device,
                     dtype=torch.float32,
                 ),
             ]
@@ -265,12 +266,12 @@ class DoMINODataPipe(Dataset):
             self.config.bounding_box_dims_surf = [
                 torch.tensor(
                     self.config.bounding_box_dims_surf.max,
-                    device=self.device,
+                    device=self.preproc_device,
                     dtype=torch.float32,
                 ),
                 torch.tensor(
                     self.config.bounding_box_dims_surf.min,
-                    device=self.device,
+                    device=self.preproc_device,
                     dtype=torch.float32,
                 ),
             ]
@@ -285,20 +286,26 @@ class DoMINODataPipe(Dataset):
         # and on the right device:
         if self.config.volume_factors is not None:
             self.config.volume_factors = torch.tensor(
-                self.config.volume_factors, device=self.device, dtype=torch.float32
+                self.config.volume_factors,
+                device=self.preproc_device,
+                dtype=torch.float32,
             )
         if self.config.surface_factors is not None:
             self.config.surface_factors = torch.tensor(
-                self.config.surface_factors, device=self.device, dtype=torch.float32
+                self.config.surface_factors,
+                device=self.preproc_device,
+                dtype=torch.float32,
             )
 
         # Always read these keys:
         self.keys_to_read = ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas"]
 
         self.keys_to_read_if_available = {
-            "global_params_values": torch.tensor([[30.0], [1.226]], device=self.device),
+            "global_params_values": torch.tensor(
+                [[30.0], [1.226]], device=self.preproc_device
+            ),
             "global_params_reference": torch.tensor(
-                [[30.0], [1.226]], device=self.device
+                [[30.0], [1.226]], device=self.preproc_device
             ),
         }
 
@@ -318,7 +325,8 @@ class DoMINODataPipe(Dataset):
         self.dataset = DrivaerMLDataset(
             data_dir=self.config.data_path,
             keys_to_read=self.keys_to_read,
-            output_device=self.device,
+            output_device=self.preproc_device,
+            pin_memory=pin_memory,
             consumer_stream=torch.cuda.default_stream(),
         )
 
@@ -803,6 +811,11 @@ class DoMINODataPipe(Dataset):
             data_dict = self.dataset[index]
             data_dict = self.process_data(data_dict, idx)
 
+        # If the data is not on the target device, put it there:
+        for key, value in data_dict.items():
+            if value.device != self.output_device:
+                data_dict[key] = value.to(self.output_device)
+
         # Add a batch dimension to the data_dict
         data_dict = {k: v.unsqueeze(0) for k, v in data_dict.items()}
 
@@ -865,7 +878,8 @@ class DoMINODataPipe(Dataset):
 
         # Start loading two ahead:
         N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
-        if N >= current_idx + 2:
+        print(f"N: {N}, current_idx: {current_idx}")
+        if N > current_idx + 2:
             self.dataset.preload(self.idx_to_index(current_idx + 1))
             self.dataset.preload(self.idx_to_index(current_idx + 2))
 
@@ -885,34 +899,38 @@ class DoMINODataPipe(Dataset):
         N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
 
         # Trigger the dataset to start loading index 0:
-        if N >= 1:
+        if N > 1:
             self.dataset.preload(self.idx_to_index(self.i))
-        if N >= 2:
+        if N > 2:
             self.dataset.preload(self.idx_to_index(self.i + 1))
 
         return self
 
 
-def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -> None:
-    # Create a dataset for just the field keys:
+def compute_scaling_factors(
+    cfg: DictConfig, input_path: str, target_keys: list[str], use_cache=None
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Using the dataset at the path, compute the mean, std, min, and max of the target keys.
 
-    norm_keys = [
-        "volume_fields",
-        "surface_fields",
-        "stl_centers",
-        "volume_mesh_centers",
-        "surface_mesh_centers",
-    ]
+    Args:
+        cfg: Hydra configuration object containing all parameters
+        input_path: Path to the dataset to load.
+        target_keys: List of keys to compute the mean, std, min, and max of.
+        use_cache: (deprecated) This argument has no effect.
+    """
+
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
     dataset = DrivaerMLDataset(
         data_dir=input_path,
-        keys_to_read=norm_keys,
-        output_device=torch.device("cuda"),  # TODO - configure this more carefully here
+        keys_to_read=target_keys,
+        output_device=device,
     )
 
     mean, std, min_val, max_val = compute_mean_std_min_max(
         dataset,
-        field_keys=norm_keys,
+        field_keys=target_keys,
     )
 
     return mean, std, min_val, max_val

@@ -128,6 +128,35 @@ class NpyFileReader(BackendReader):
         pass
 
 
+class NpzFileReader(BackendReader):
+    """
+    Reader for npz files.
+    """
+
+    def __init__(self, keys_to_read: list[str] | None) -> None:
+        super().__init__(keys_to_read)
+
+    def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
+        """
+        Read a file and return a dictionary of tensors.
+        """
+        in_data = np.load(filename)
+
+        keys_found = set(in_data.keys())
+        keys_missing = set(self.keys_to_read) - keys_found
+        if len(keys_missing) > 0:
+            raise ValueError(f"Keys {keys_missing} not found in file {filename}")
+
+        data = {key: torch.from_numpy(in_data[key][:]) for key in self.keys_to_read}
+
+        return data
+
+    def read_file_sharded(
+        self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
+    ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+        pass
+
+
 class ZarrFileReader(BackendReader):
     """
     Reader for zarr files.
@@ -265,7 +294,7 @@ class DrivaerMLDataset:
         keys_to_read: list[str] | None,
         output_device: torch.device,
         preload_depth: int = 2,
-        pin_memory: bool = True,
+        pin_memory: bool = False,
         device_mesh: torch.distributed.DeviceMesh | None = None,
         placements: dict[str, torch.distributed.tensor.Placement] | None = None,
         consumer_stream: torch.cuda.Stream | None = None,
@@ -333,6 +362,9 @@ class DrivaerMLDataset:
         if all(file.suffix == ".npy" for file in files):
             file_reader = NpyFileReader(self._keys_to_read)
             return file_reader, files
+        elif all(file.suffix == ".npz" for file in files):
+            file_reader = NpzFileReader(self._keys_to_read)
+            return file_reader, files
         elif all(file.suffix == ".zarr" and file.is_dir() for file in files):
             if TENSORSTORE_AVAILABLE:
                 file_reader = TensorStoreZarrReader(self._keys_to_read)
@@ -358,7 +390,6 @@ class DrivaerMLDataset:
         if self.output_device.type != "cuda":
             return data
 
-        # result = StreamDict()
         result = {}
 
         with torch.cuda.stream(self._data_loader_stream):
