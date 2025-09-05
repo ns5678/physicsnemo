@@ -864,7 +864,8 @@ class DoMINODataPipe(Dataset):
         current_idx = self.i
 
         # Start loading two ahead:
-        if len(self.dataset) >= current_idx + 2:
+        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
+        if N >= current_idx + 2:
             self.dataset.preload(self.idx_to_index(current_idx + 1))
             self.dataset.preload(self.idx_to_index(current_idx + 2))
 
@@ -881,10 +882,12 @@ class DoMINODataPipe(Dataset):
 
         self.i = 0
 
+        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
+
         # Trigger the dataset to start loading index 0:
-        if len(self.dataset) >= 1:
+        if N >= 1:
             self.dataset.preload(self.idx_to_index(self.i))
-        if len(self.dataset) >= 2:
+        if N >= 2:
             self.dataset.preload(self.idx_to_index(self.i + 1))
 
         return self
@@ -893,15 +896,23 @@ class DoMINODataPipe(Dataset):
 def compute_scaling_factors(cfg: DictConfig, input_path: str, use_cache: bool) -> None:
     # Create a dataset for just the field keys:
 
+    norm_keys = [
+        "volume_fields",
+        "surface_fields",
+        "stl_centers",
+        "volume_mesh_centers",
+        "surface_mesh_centers",
+    ]
+
     dataset = DrivaerMLDataset(
         data_dir=input_path,
-        keys_to_read=["volume_fields", "surface_fields"],
+        keys_to_read=norm_keys,
         output_device=torch.device("cuda"),  # TODO - configure this more carefully here
     )
 
     mean, std, min_val, max_val = compute_mean_std_min_max(
         dataset,
-        field_keys=["volume_fields", "surface_fields"],
+        field_keys=norm_keys,
     )
 
     return mean, std, min_val, max_val
