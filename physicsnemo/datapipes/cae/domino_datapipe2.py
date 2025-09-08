@@ -35,7 +35,6 @@ import numpy as np
 import torch
 import torch.cuda.nvtx as nvtx
 from omegaconf import DictConfig
-from torch import Tensor
 from torch.utils.data import Dataset
 
 from physicsnemo.datapipes.cae.drivaer_ml_dataset import (
@@ -468,7 +467,7 @@ class DoMINODataPipe(Dataset):
                 (s_max[2] - s_min[2]) / nz,
             )
             pos_normals_com_surface = calculate_normal_positional_encoding(
-                surface_coordinates, center_of_mass, cell_length=[dx, dy, dz]
+                surface_coordinates, center_of_mass, cell_dimensions=[dx, dy, dz]
             )
         else:
             pos_normals_com_surface = surface_coordinates - center_of_mass
@@ -549,12 +548,10 @@ class DoMINODataPipe(Dataset):
                 if self.config.scaling_type == "mean_std_scaling":
                     surf_mean = self.config.surface_factors[0]
                     surf_std = self.config.surface_factors[1]
-                    # TODO - Are these array calls needed?
                     surface_fields = standardize(surface_fields, surf_mean, surf_std)
                 elif self.config.scaling_type == "min_max_scaling":
                     surf_min = self.config.surface_factors[1]
                     surf_max = self.config.surface_factors[0]
-                    # TODO - Are these array calls needed?
                     surface_fields = normalize(surface_fields, surf_max, surf_min)
 
         return_dict.update(
@@ -667,10 +664,10 @@ class DoMINODataPipe(Dataset):
             pos_normals_closest_vol = calculate_normal_positional_encoding(
                 volume_coordinates,
                 sdf_node_closest_point,
-                cell_length=[dx, dy, dz],
+                cell_dimensions=[dx, dy, dz],
             )
             pos_normals_com_vol = calculate_normal_positional_encoding(
-                volume_coordinates, center_of_mass, cell_length=[dx, dy, dz]
+                volume_coordinates, center_of_mass, cell_dimensions=[dx, dy, dz]
             )
         else:
             pos_normals_closest_vol = volume_coordinates - sdf_node_closest_point
@@ -679,6 +676,8 @@ class DoMINODataPipe(Dataset):
         if self.config.normalize_coordinates:
             volume_coordinates = normalize(volume_coordinates, c_max, c_min)
             grid = normalize(self.volume_grid, c_max, c_min)
+        else:
+            grid = self.volume_grid
 
         if self.config.scaling_type is not None:
             if self.config.volume_factors is not None:
@@ -870,15 +869,16 @@ class DoMINODataPipe(Dataset):
         #   - the preprocessing pipe has to implicitly wait for idx +1 in the dataset
         # - wait for the preprocessing pipe at idx to finish
         # return the data.
-        if self.i >= len(self.dataset):
+        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
+
+        if self.i >= N:
             self.i = 0
             raise StopIteration
 
         current_idx = self.i
 
         # Start loading two ahead:
-        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
-        print(f"N: {N}, current_idx: {current_idx}")
+
         if N > current_idx + 2:
             self.dataset.preload(self.idx_to_index(current_idx + 1))
             self.dataset.preload(self.idx_to_index(current_idx + 2))
@@ -1004,7 +1004,8 @@ class CachedDoMINODataset(Dataset):
         filepath = self.data_path / cfd_filename
         result = np.load(filepath, allow_pickle=True).item()
         result = {
-            k: v.numpy() if isinstance(v, Tensor) else v for k, v in result.items()
+            k: torch.from_numpy(v) if isinstance(v, np.ndarray) else v
+            for k, v in result.items()
         }
 
         nvtx.range_pop()

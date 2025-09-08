@@ -102,7 +102,7 @@ def validation_step(
     with torch.no_grad():
         for i_batch, sample_batched in enumerate(dataloader):
             sampled_batched = dict_to_device(sample_batched, device)
-            print(f"validation i batch {i_batch}")
+
             with autocast("cuda", enabled=True):
                 if add_physics_loss:
                     prediction_vol, prediction_surf = model(
@@ -349,17 +349,6 @@ def main(cfg: DictConfig) -> None:
         **cfg.val.sampler,
     )
 
-    # train_dataloader = DataLoader(
-    #     train_dataset,
-    #     sampler=train_sampler,
-    #     **cfg.train.dataloader,
-    # )
-    # val_dataloader = DataLoader(
-    #     val_dataset,
-    #     sampler=val_sampler,
-    #     **cfg.val.dataloader,
-    # )
-
     model = DoMINO(
         input_features=3,
         output_features_vol=num_vol_vars,
@@ -449,8 +438,11 @@ def main(cfg: DictConfig) -> None:
                 "Physics loss enabled - mixed precision (autocast) will be disabled as physics loss computation is not supported with mixed precision"
             )
 
+        # This controls what indices to use for each epoch.
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
+        train_dataset.set_indices(list(train_sampler))
+        val_dataset.set_indices(list(val_sampler))
 
         initial_integral_factor = initial_integral_factor_orig
 
@@ -458,9 +450,6 @@ def main(cfg: DictConfig) -> None:
             surface_scaling_loss = 1.0 * cfg.model.surf_loss_scaling
         else:
             surface_scaling_loss = cfg.model.surf_loss_scaling
-
-        train_dataset.set_indices(list(train_sampler))
-        print(f"train_dataset.indices: {train_dataset.indices}")
 
         model.train(True)
         epoch_start_time = time.perf_counter()

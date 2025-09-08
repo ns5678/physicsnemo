@@ -27,6 +27,12 @@ import zarr
 from pytest_utils import import_or_fail
 from scipy.spatial import ConvexHull
 
+from physicsnemo.datapipes.cae.domino_datapipe2 import (
+    CachedDoMINODataset,
+    DoMINODataConfig,
+    DoMINODataPipe,
+)
+
 Tensor = torch.Tensor
 
 # DEFINING GLOBAL VARIABLES HERE
@@ -91,7 +97,7 @@ def synthetic_domino_data(
     for i in range(n_examples):
         # We are generating a mesh on a random sphere.
         stl_points = random_sample_on_unit_sphere(N_mesh_points)
-        print(f"stl_points.shape: {stl_points.shape}")
+
         # Generate the triangles with ConvexHull:
         hull = ConvexHull(stl_points)
         faces = hull.simplices  # (M, 3)
@@ -238,7 +244,6 @@ def bounding_boxes():
 
 def create_basic_dataset(data_dir, model_type, **kwargs):
     """Helper function to create a basic DoMINODataPipe with default settings."""
-    from physicsnemo.datapipes.cae.domino_datapipe import DoMINODataPipe
 
     # assert model_type in ["volume", "surface", "combined"]
 
@@ -269,6 +274,8 @@ def create_basic_dataset(data_dir, model_type, **kwargs):
     }
 
     default_kwargs.update(kwargs)
+
+    print(f"kwargs: {default_kwargs}")
 
     return DoMINODataPipe(
         input_path=input_path, model_type=model_type, **default_kwargs
@@ -327,7 +334,6 @@ def test_domino_datapipe_core(
     """Core test for basic functionality with different device and model configurations."""
 
     data_dir = request.getfixturevalue(data_dir)
-    print(f"data_dir: {data_dir}")
     dataset = create_basic_dataset(
         data_dir, model_type, gpu_preprocessing=gpu_preprocessing, gpu_output=gpu_output
     )
@@ -360,13 +366,12 @@ def test_domino_datapipe_coordinate_normalization(
     v_coords = sample["volume_mesh_centers"]
     s_coords = sample["surface_mesh_centers"]
 
-    v_min = torch.min(v_coords, dim=0).values
-    v_max = torch.max(v_coords, dim=0).values
-    s_min = torch.min(s_coords, dim=0).values
-    s_max = torch.max(s_coords, dim=0).values
+    # Batch size is 1 here, but in principle this could be a loop:
+    v_min = torch.min(v_coords[0], dim=0).values
+    v_max = torch.max(v_coords[0], dim=0).values
+    s_min = torch.min(s_coords[0], dim=0).values
+    s_max = torch.max(s_coords[0], dim=0).values
 
-    print(f"{normalize_coordinates} v_coords: {v_min} to {v_max}")
-    print(f"{normalize_coordinates} s_coords: {s_min} to {s_max}")
     # If normalization is enabled, coordinates should be in [-2, 2] range
     if normalize_coordinates:
         if sample_in_bbox:
@@ -467,9 +472,9 @@ def test_domino_datapipe_sampling(zarr_dataset, model_type, sampling, pytestconf
     if model_type in ["volume", "combined"]:
         for key in ["volume_mesh_centers", "volume_fields"]:
             if sampling:
-                assert sample[key].shape[0] == sample_points
+                assert sample[key].shape[1] == sample_points
             else:
-                assert sample[key].shape[0] == sample["volume_mesh_centers"].shape[0]
+                assert sample[key].shape[1] == sample["volume_mesh_centers"].shape[1]
 
     # Model-specific keys
     if model_type in ["surface", "combined"]:
@@ -480,20 +485,20 @@ def test_domino_datapipe_sampling(zarr_dataset, model_type, sampling, pytestconf
             "surface_fields",
         ]:
             if sampling:
-                assert sample[key].shape[0] == sample_points
+                assert sample[key].shape[1] == sample_points
             else:
-                assert sample[key].shape[0] == sample["surface_mesh_centers"].shape[0]
+                assert sample[key].shape[1] == sample["surface_mesh_centers"].shape[1]
         for key in [
             "surface_mesh_neighbors",
             "surface_neighbors_normals",
             "surface_neighbors_areas",
         ]:
             if sampling:
-                assert sample[key].shape[0] == sample_points
-                assert sample[key].shape[1] == dataset.config.num_surface_neighbors - 1
+                assert sample[key].shape[1] == sample_points
+                assert sample[key].shape[2] == dataset.config.num_surface_neighbors - 1
             else:
-                assert sample[key].shape[0] == sample["surface_mesh_neighbors"].shape[0]
-                assert sample[key].shape[1] == dataset.config.num_surface_neighbors - 1
+                assert sample[key].shape[1] == sample["surface_mesh_neighbors"].shape[1]
+                assert sample[key].shape[2] == dataset.config.num_surface_neighbors - 1
 
 
 @import_or_fail(["warp", "cupy", "cuml"])
@@ -572,7 +577,6 @@ def test_domino_datapipe_caching_config(zarr_dataset, model_type, pytestconfig):
 @import_or_fail(["warp", "cupy", "cuml"])
 def test_cached_domino_dataset(zarr_dataset, tmp_path, pytestconfig):
     """Test CachedDoMINODataset functionality."""
-    from physicsnemo.datapipes.cae.domino_datapipe import CachedDoMINODataset
 
     # Create some mock cached data files
     for i in range(3):
@@ -637,7 +641,6 @@ def test_domino_datapipe_invalid_caching_config(zarr_dataset, pytestconfig):
 @import_or_fail(["warp", "cupy", "cuml"])
 def test_domino_datapipe_invalid_phase(pytestconfig):
     """Test that invalid phase values raise appropriate errors."""
-    from physicsnemo.datapipes.cae.domino_datapipe import DoMINODataConfig
 
     with pytest.raises(ValueError, match="phase should be one of"):
         DoMINODataConfig(data_path=tempfile.mkdtemp(), phase="invalid_phase")
@@ -646,7 +649,6 @@ def test_domino_datapipe_invalid_phase(pytestconfig):
 @import_or_fail(["warp", "cupy", "cuml"])
 def test_domino_datapipe_invalid_scaling_type(pytestconfig):
     """Test that invalid scaling_type values raise appropriate errors."""
-    from physicsnemo.datapipes.cae.domino_datapipe import DoMINODataConfig
 
     with pytest.raises(ValueError, match="scaling_type should be one of"):
         DoMINODataConfig(
@@ -684,10 +686,3 @@ def test_domino_datapipe_surface_sampling(
 
     sample = dataset[0]
     validate_sample_structure(sample, "surface", gpu_output=True)
-
-
-if __name__ == "__main__":
-    out_dir = synthetic_domino_data(
-        out_format="zarr",
-    )
-    print(out_dir)
