@@ -20,7 +20,7 @@ in npy format.
 
 """
 
-import time, random
+import time, random, json
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
@@ -57,15 +57,33 @@ class DrivAerAwsPaths:
 
     @staticmethod
     def geometry_path(car_dir: Path) -> Path:
-        return car_dir / f"drivaer_{DrivAerAwsPaths._get_index(car_dir)}.stl"
+        return car_dir / f"merged_surfaces.stl"
 
     @staticmethod
     def volume_path(car_dir: Path) -> Path:
-        return car_dir / f"volume_{DrivAerAwsPaths._get_index(car_dir)}.vtu"
+        return car_dir / f"merged_volumes.vtu"
 
     @staticmethod
     def surface_path(car_dir: Path) -> Path:
-        return car_dir / f"boundary_{DrivAerAwsPaths._get_index(car_dir)}.vtp"
+        return car_dir / f"merged_surfaces.vtp"
+
+
+class ShiftWingPaths:
+    @staticmethod
+    def geometry_path(car_dir: Path) -> Path:
+        return car_dir / "merged_surfaces.stl"
+
+    @staticmethod
+    def volume_path(car_dir: Path) -> Path:
+        return car_dir / "merged_volumes.vtu"
+
+    @staticmethod
+    def surface_path(car_dir: Path) -> Path:
+        return car_dir / "merged_surfaces.vtp"
+
+    @staticmethod
+    def params_path(car_dir: Path) -> Path:
+        return car_dir / "params.json"
 
 
 class OpenFoamDataset(Dataset):
@@ -77,7 +95,7 @@ class OpenFoamDataset(Dataset):
     def __init__(
         self,
         data_path: Union[str, Path],
-        kind: Literal["drivesim", "drivaer_aws"] = "drivesim",
+        kind: Literal["drivesim", "drivaer_aws", "shift_wing", "lc_data"] = "drivesim",
         surface_variables: Optional[list] = [
             "pMean",
             "wallShearStress",
@@ -100,11 +118,17 @@ class OpenFoamDataset(Dataset):
 
         self.data_path = data_path
 
-        supported_kinds = ["drivesim", "drivaer_aws"]
+        supported_kinds = ["drivesim", "drivaer_aws", "lc_data"]
         assert (
             kind in supported_kinds
         ), f"kind should be one of {supported_kinds}, got {kind}"
-        self.path_getter = DriveSimPaths if kind == "drivesim" else DrivAerAwsPaths
+        
+        if kind == "drivesim":
+            self.path_getter = DriveSimPaths
+        elif kind == "drivaer_aws":
+            self.path_getter = DrivAerAwsPaths
+        else:  # shift_wing or lc_data
+            self.path_getter = ShiftWingPaths
 
         assert self.data_path.exists(), f"Path {self.data_path} does not exist"
 
@@ -116,16 +140,15 @@ class OpenFoamDataset(Dataset):
 
         self.surface_variables = surface_variables
         self.volume_variables = volume_variables
-
         self.global_params_types = global_params_types
         self.global_params_reference = global_params_reference
-
+        self.kind = kind
         self.stream_velocity = 0.0
         for vel_component in self.global_params_reference["inlet_velocity"]:
             self.stream_velocity += vel_component**2
         self.stream_velocity = np.sqrt(self.stream_velocity)
         self.air_density = self.global_params_reference["air_density"]
-
+        self.pressure = self.global_params_reference["pressure"]
         self.device = device
         self.model_type = model_type
 
@@ -136,6 +159,15 @@ class OpenFoamDataset(Dataset):
         cfd_filename = self.filenames[idx]
         car_dir = self.data_path / cfd_filename
 
+        # Read parameters from JSON file for shift_wing samples
+        params_file = self.path_getter.params_path(car_dir)
+        with open(params_file, 'r') as f:
+            params = json.load(f)
+        sample_stream_velocity = params.get("stream_velocity", self.stream_velocity)
+        sample_air_density = params.get("air_density", self.air_density)
+        sample_pressure = params.get("pressure", self.pressure)
+    
+        # Read geometry STL file
         stl_path = self.path_getter.geometry_path(car_dir)
         reader = pv.get_reader(stl_path)
         mesh_stl = reader.read()
@@ -150,6 +182,7 @@ class OpenFoamDataset(Dataset):
 
         length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
 
+        # Read volume VTU file
         if self.model_type == "volume" or self.model_type == "combined":
             filepath = self.path_getter.volume_path(car_dir)
             reader = vtk.vtkXMLUnstructuredGridReader()
@@ -164,18 +197,15 @@ class OpenFoamDataset(Dataset):
             volume_fields = np.concatenate(volume_fields, axis=-1)
 
             # Non-dimensionalize volume fields
-            volume_fields[:, :3] = volume_fields[:, :3] / self.stream_velocity
+            volume_fields[:, :3] = volume_fields[:, :3] / sample_stream_velocity
             volume_fields[:, 3:4] = volume_fields[:, 3:4] / (
-                self.air_density * self.stream_velocity**2.0
-            )
-
-            volume_fields[:, 4:] = volume_fields[:, 4:] / (
-                self.stream_velocity * length_scale
+               sample_pressure
             )
         else:
             volume_fields = None
             volume_coordinates = None
 
+        # Read surface VTP file
         if self.model_type == "surface" or self.model_type == "combined":
             surface_filepath = self.path_getter.surface_path(car_dir)
             reader = vtk.vtkXMLPolyDataReader()
@@ -203,9 +233,7 @@ class OpenFoamDataset(Dataset):
             )
 
             # Non-dimensionalize surface fields
-            surface_fields = surface_fields / (
-                self.air_density * self.stream_velocity**2.0
-            )
+            surface_fields = surface_fields / sample_pressure
         else:
             surface_fields = None
             surface_coordinates = None
@@ -227,26 +255,30 @@ class OpenFoamDataset(Dataset):
             global_params_reference_list, dtype=np.float32
         )
 
-        # Prepare the list of global parameter values for each simulation file
+        # Define the list of global parameter values for each simulation.
         # Note: The user must ensure that the values provided here correspond to the
         # `global_parameters` specified in `config.yaml` and that these parameters
         # exist within each simulation file.
         global_params_values_list = []
         for key in self.global_params_types.keys():
             if key == "inlet_velocity":
-                global_params_values_list.extend(
-                    self.global_params_reference["inlet_velocity"]
-                )
+                global_params_values_list.append(sample_stream_velocity)
             elif key == "air_density":
-                global_params_values_list.append(
-                    self.global_params_reference["air_density"]
-                )
+                global_params_values_list.append(sample_air_density)
+            elif key == "pressure":
+                global_params_values_list.append(sample_pressure)
             else:
                 raise ValueError(
                     f"Global parameter {key} not supported for  this dataset"
                 )
         global_params_values = np.array(global_params_values_list, dtype=np.float32)
 
+
+        print('Surface fields shape: ', surface_fields.shape, 'Volume fields shape: ', volume_fields.shape)
+        print('Surface fields min: ', np.min(surface_fields), 'Surface fields max: ', np.max(surface_fields))
+        print('Volume fields min: ', np.min(volume_fields), 'Volume fields max: ', np.max(volume_fields))
+        print('global_params_values:', global_params_values)
+        print('global_params_reference:', global_params_reference)
         # Add the parameters to the dictionary
         return {
             "stl_coordinates": np.float32(stl_vertices),
