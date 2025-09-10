@@ -19,9 +19,9 @@
 # └───────────────────────────────────────────┘  
 # Project name
 project:
-  name: LC_Dataset
+  name: LC_Dataset_No_Integral_Loss
   
-exp_tag: 1 # Experiment tag
+exp_tag: 2 # Experiment tag
 # Main output directory.
 project_dir: outputs/${project.name}/
 output: outputs/${project.name}/${exp_tag}
@@ -42,7 +42,7 @@ resume_dir: ${output}/models
 data_processor:
   kind: lc_data # must be either drivesim or drivaer_aws
   output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
-  input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
+  input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples_train/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 8

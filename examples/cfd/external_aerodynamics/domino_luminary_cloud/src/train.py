@@ -356,20 +356,21 @@ def compute_loss_dict(
 
         total_loss_terms.append(loss_surf)
         loss_dict["loss_surf"] = loss_surf
-        total_loss_terms.append(loss_surf_area)
-        loss_dict["loss_surf_area"] = loss_surf_area
-        loss_integral = (
-            integral_loss_fn(
-                prediction_surf,
-                target_surf,
-                surface_areas,
-                surface_normals,
-                stream_velocity,
-                padded_value=-10,
-            )
-        ) * integral_scaling_factor
-        loss_dict["loss_integral"] = loss_integral
-        total_loss_terms.append(loss_integral)
+        
+        # total_loss_terms.append(loss_surf_area)
+        # loss_dict["loss_surf_area"] = loss_surf_area
+        # loss_integral = (
+        #     integral_loss_fn(
+        #         prediction_surf,
+        #         target_surf,
+        #         surface_areas,
+        #         surface_normals,
+        #         stream_velocity,
+        #         padded_value=-10,
+        #     )
+        # ) * integral_scaling_factor
+        # loss_dict["loss_integral"] = loss_integral
+        # total_loss_terms.append(loss_integral)
 
     total_loss = sum(total_loss_terms)
     loss_dict["total_loss"] = total_loss
