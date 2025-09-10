@@ -20,7 +20,6 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
-import psutil
 import torch
 import zarr
 
@@ -31,25 +30,17 @@ try:
 except ImportError:
     TENSORSTORE_AVAILABLE = False
 
+try:
+    import pyvista as pv
+
+    PV_AVAILABLE = True
+except ImportError:
+    PV_AVAILABLE = False
+
 from physicsnemo.distributed import ShardTensor, ShardTensorSpec
 
 # from physicsnemo.distributed.utils import compute_split_shapes
 
-# For use on systems where cpu_affinity is not available:
-psutil_process = psutil.Process()
-
-
-class FakeProcess:
-    """
-    Enable a fake cpu affinity setting if it's not available
-    """
-
-    def cpu_affinity(self, cpus: list[int] | None) -> None:
-        pass
-
-
-if not hasattr(psutil_process, "cpu_affinity"):
-    psutil_process = FakeProcess()
 
 # Abstractions:
 # - want to read npy/npz/.zarr/.stl/.vtp files
@@ -187,7 +178,128 @@ class ZarrFileReader(BackendReader):
         """
         Read a file and return a dictionary of tensors.
         """
-        pass
+        raise NotImplementedError("Not implemented yet.")
+
+
+if PV_AVAILABLE:
+
+    class VTKFileReader(BackendReader):
+        """
+        Reader for vtk files.
+        """
+
+        def __init__(self, keys_to_read: list[str] | None) -> None:
+            super().__init__(keys_to_read)
+
+            self.stl_file_keys = [
+                "stl_coordinates",
+                "stl_centers",
+                "stl_faces",
+                "stl_areas",
+            ]
+            self.vtp_file_keys = [
+                "surface_mesh_centers",
+                "surface_normals",
+                "surface_mesh_sizes",
+                "CpMeanTrim",
+                "pMeanTrim",
+                "wallShearStressMeanTrim",
+            ]
+            self.vtu_file_keys = [
+                "volume_mesh_centers",
+                "volume_fields",
+            ]
+
+            self.exclude_patterns = [
+                "single_solid",
+            ]
+
+        def get_file_name(self, dir_name: pathlib.Path, extension: str) -> pathlib.Path:
+            """
+            Get the file name for a given directory and extension.
+            """
+            # >>> matches = [p for p in list(dir_name.iterdir()) if p.suffix == ".stl" and not any(pattern in p.name for pattern in exclude_patterns)]
+            matches = [
+                p
+                for p in dir_name.iterdir()
+                if p.suffix == extension
+                and not any(pattern in p.name for pattern in self.exclude_patterns)
+            ]
+            if len(matches) == 0:
+                raise FileNotFoundError(f"No {extension} files found in {dir_name}")
+            fname = matches[0]
+            return dir_name / fname
+
+        def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
+            """
+            Read a set of files and return a dictionary of tensors.
+            """
+
+            # This reader attempts to only read what's necessary, and not more.
+            # So, the functions that do the reading are each "one file" functions
+            # and we open them for processing only when necessary.
+
+            return_data = {}
+
+            # Note that this reader is, already, running in a background thread.
+            # It may or may not help to further thread these calls.
+            if any(key in self.stl_file_keys for key in self.keys_to_read):
+                stl_path = self.get_file_name(filename, ".stl")
+                stl_data = self.read_data_from_stl(stl_path)
+                return_data.update(stl_data)
+            if any(key in self.vtp_file_keys for key in self.keys_to_read):
+                vtp_path = self.get_file_name(filename, ".vtp")
+                vtp_data = self.read_data_from_vtp(vtp_path)
+                return_data.update(vtp_data)
+            if any(key in self.vtu_file_keys for key in self.keys_to_read):
+                raise NotImplementedError("VTU files are not supported yet.")
+
+            return return_data
+
+        def read_file_sharded(
+            self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
+        ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+            """
+            Read a file and return a dictionary of tensors.
+            """
+            raise NotImplementedError("Not implemented yet.")
+
+        def read_data_from_stl(
+            self,
+            stl_path: str,
+        ) -> dict:
+            """
+            Reads surface mesh data from an STL file and prepares a batch dictionary for inference.
+
+            Args:
+                stl_path (str): Path to the STL file.
+
+            Returns:
+                dict: Batch dictionary with mesh faces and coordinates as torch tensors.
+            """
+
+            mesh = pv.read(stl_path)
+
+            batch = {}
+
+            faces = mesh.faces.reshape(-1, 4)
+            faces = faces[:, 1:]
+
+            batch["stl_faces"] = faces.flatten()
+
+            batch["stl_coordinates"] = mesh.points
+            batch["surface_normals"] = mesh.cell_normals
+
+            batch = {k: torch.from_numpy(v) for k, v in batch.items()}
+
+            return batch
+
+        def read_data_from_vtp(self, vtp_path: str) -> dict:
+            """
+            Read vtp file from a file
+            """
+
+            raise NotImplementedError("Not implemented yet.")
 
 
 if TENSORSTORE_AVAILABLE:
@@ -253,7 +365,20 @@ else:
         Null reader for tensorstore zarr files.
         """
 
-        pass
+        def __init__(self, keys_to_read: list[str] | None) -> None:
+            # Raise an exception on construction if we get here:
+            raise NotImplementedError(
+                "TensorStoreZarrReader is not available without tensorstore.  `pip install tensorstore`."
+            )
+
+
+def is_vtk_directory(file: pathlib.Path) -> bool:
+    """
+    Check if a file is a vtk directory.
+    """
+    return file.is_dir() and all(
+        [f.suffix in [".vtp", ".stl", ".vtu", ".vtk", ".csv"] for f in file.iterdir()]
+    )
 
 
 class DrivaerMLDataset:
@@ -371,9 +496,13 @@ class DrivaerMLDataset:
             else:
                 file_reader = ZarrFileReader(self._keys_to_read)
             return file_reader, files
+        elif all(is_vtk_directory(file) for file in files):
+            file_reader = VTKFileReader(self._keys_to_read)
+            return file_reader, files
+            # Each "file" here is a directory of .vtp, stl, etc.
         else:
             # TODO - support folders of stl, vtp, vtu.
-            raise ValueError(f"Unsupported file type: {files}")
+            raise ValueError(f"Unsupported file type: {files[0]}")
 
     def _move_to_gpu(
         self, data: dict[str, torch.Tensor], idx: int

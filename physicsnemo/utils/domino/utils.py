@@ -483,7 +483,7 @@ def shuffle_array(
         for w, p in zip(chunk_weights, points_per_chunk)
     ]
 
-    # Stich the chunks back together:
+    # Stitch the chunks back together:
     idx = torch.cat(idx_chunks)
 
     # Apply the selection:
@@ -870,3 +870,71 @@ def solution_weighted_shuffle_array(
     sampling_probabilities /= sampling_probabilities.sum()  # Normalize to sum to 1
 
     return shuffle_array(arr, n_points, sampling_probabilities)
+
+
+def sample_points_on_mesh(
+    mesh_coordinates: torch.Tensor,
+    mesh_faces: torch.Tensor,
+    n_points: int,
+    mesh_areas: torch.Tensor | None = None,
+    mesh_normals: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Uniformly sample points on a mesh.
+
+    Will use area-weighted sampling to select mesh regions, then uniform
+    sampling within those triangles.
+    """
+
+    # First, if we don't have the areas, compute them:
+    faces_reshaped = mesh_faces.reshape(-1, 3)
+
+    if mesh_areas is None or mesh_normals is None:
+        # We have to do 90% of the work for both of these,
+        # to get either.  So check at the last minute:
+        faces_reshaped_p0 = faces_reshaped[:, 0]
+        faces_reshaped_p1 = faces_reshaped[:, 1]
+        faces_reshaped_p2 = faces_reshaped[:, 2]
+        d1 = mesh_coordinates[faces_reshaped_p1] - mesh_coordinates[faces_reshaped_p0]
+        d2 = mesh_coordinates[faces_reshaped_p2] - mesh_coordinates[faces_reshaped_p0]
+        inferred_mesh_normals = torch.linalg.cross(d1, d2, dim=1)
+        normals_norm = torch.linalg.norm(inferred_mesh_normals, dim=1)
+        inferred_mesh_normals = inferred_mesh_normals / normals_norm.unsqueeze(1)
+        if mesh_normals is None:
+            mesh_normals = inferred_mesh_normals
+        if mesh_areas is None:
+            mesh_areas = 0.5 * normals_norm
+
+    # Next, use the areas to compute a weighted sampling of the triangles:
+    target_triangles = torch.multinomial(
+        mesh_areas,
+        n_points,
+        replacement=True,
+    )
+
+    target_faces = faces_reshaped[target_triangles]
+
+    # Next, generate random points within each selected triangle.
+    # We'll map two uniform distributions to the points in the triangles.
+    # See https://stackoverflow.com/questions/47410054/generate-random-locations-within-a-triangular-domain
+    # and the original reference https://www.cs.princeton.edu/%7Efunk/tog02.pdf
+    # for more information
+    r1 = torch.rand((n_points, 1), device=mesh_coordinates.device)
+    r2 = torch.rand((n_points, 1), device=mesh_coordinates.device)
+
+    s1 = torch.sqrt(r1)
+
+    local_coords = torch.stack(
+        (1.0 - s1, (1.0 - r2) * s1, r2 * s1),
+        dim=1,
+    )
+
+    barycentric_coordinates = torch.sum(
+        mesh_coordinates[target_faces] * local_coords, dim=1
+    )
+
+    # Apply the selection to the other tensors, too:
+    target_areas = mesh_areas[target_triangles]
+    target_normals = mesh_normals[target_triangles]
+
+    return barycentric_coordinates, target_triangles, target_areas, target_normals

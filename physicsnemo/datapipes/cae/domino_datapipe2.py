@@ -128,7 +128,7 @@ class DoMINODataConfig:
             You might choose gpu_preprocessing=True and gpu_output=False if caching.
     """
 
-    data_path: Path
+    data_path: Path | None
     phase: Literal["train", "val", "test"]
 
     # Surface-specific variables:
@@ -161,16 +161,17 @@ class DoMINODataConfig:
     gpu_output: bool = True
 
     def __post_init__(self):
-        # Ensure data_path is a Path object:
-        if isinstance(self.data_path, str):
-            self.data_path = Path(self.data_path)
-        self.data_path = self.data_path.expanduser()
+        if self.data_path is not None:
+            # Ensure data_path is a Path object:
+            if isinstance(self.data_path, str):
+                self.data_path = Path(self.data_path)
+            self.data_path = self.data_path.expanduser()
 
-        if not self.data_path.exists():
-            raise ValueError(f"Path {self.data_path} does not exist")
+            if not self.data_path.exists():
+                raise ValueError(f"Path {self.data_path} does not exist")
 
-        if not self.data_path.is_dir():
-            raise ValueError(f"Path {self.data_path} is not a directory")
+            if not self.data_path.is_dir():
+                raise ValueError(f"Path {self.data_path} is not a directory")
 
         # Object if caching settings are impossible:
         if self.caching:
@@ -321,13 +322,16 @@ class DoMINODataPipe(Dataset):
         if self.model_type == "surface" or self.model_type == "combined":
             self.keys_to_read.extend(self.surface_keys)
 
-        self.dataset = DrivaerMLDataset(
-            data_dir=self.config.data_path,
-            keys_to_read=self.keys_to_read,
-            output_device=self.preproc_device,
-            pin_memory=pin_memory,
-            consumer_stream=torch.cuda.default_stream(),
-        )
+        if self.config.data_path is not None:
+            self.dataset = DrivaerMLDataset(
+                data_dir=self.config.data_path,
+                keys_to_read=self.keys_to_read,
+                output_device=self.preproc_device,
+                pin_memory=pin_memory,
+                consumer_stream=torch.cuda.default_stream(),
+            )
+        else:
+            self.dataset = None
 
         # This is thread storage for data preprocessing:
         self._preprocess_queue = {}
@@ -345,7 +349,10 @@ class DoMINODataPipe(Dataset):
         self.indices = indices
 
     def __len__(self):
-        return len(self.dataset)
+        if self.dataset is not None:
+            return len(self.dataset)
+        else:
+            return 0
 
     def compute_stl_scaling(
         self, stl_vertices: torch.Tensor, bounding_box_dims_surf: torch.Tensor | None
@@ -357,8 +364,6 @@ class DoMINODataPipe(Dataset):
 
         s_min = torch.amin(stl_vertices, 0)
         s_max = torch.amax(stl_vertices, 0)
-
-        length_scale = torch.amax(s_max - s_min)
 
         # if dynamic_bbox_scaling:
         # Check the bounding box is not unit length
@@ -373,7 +378,7 @@ class DoMINODataPipe(Dataset):
 
         surf_grid_max_min = torch.stack([s_min, s_max])
 
-        return s_min, s_max, length_scale, surf_grid_max_min, surf_grid
+        return s_min, s_max, surf_grid_max_min, surf_grid
 
     @profile
     def process_combined(
@@ -418,7 +423,7 @@ class DoMINODataPipe(Dataset):
         surface_coordinates: torch.Tensor,
         surface_normals: torch.Tensor,
         surface_sizes: torch.Tensor,
-        surface_fields: torch.Tensor,
+        surface_fields: torch.Tensor | None,
     ) -> dict[str, torch.Tensor]:
         nx, ny, nz = self.config.grid_resolution
 
@@ -427,7 +432,8 @@ class DoMINODataPipe(Dataset):
         # Remove any sizes <= 0:
         idx = surface_sizes > 0
         surface_sizes = surface_sizes[idx]
-        surface_fields = surface_fields[idx]
+        if surface_fields is not None:
+            surface_fields = surface_fields[idx]
         surface_normals = surface_normals[idx]
         surface_coordinates = surface_coordinates[idx]
 
@@ -442,7 +448,8 @@ class DoMINODataPipe(Dataset):
             )
             surface_normals = surface_normals[idx_s]
             surface_sizes = surface_sizes[idx_s]
-            surface_fields = surface_fields[idx_s]
+            if surface_fields is not None:
+                surface_fields = surface_fields[idx_s]
 
         c_max = self.config.bounding_box_dims[0]
         c_min = self.config.bounding_box_dims[1]
@@ -457,7 +464,8 @@ class DoMINODataPipe(Dataset):
             surface_coordinates = surface_coordinates[ids_in_bbox]
             surface_normals = surface_normals[ids_in_bbox]
             surface_sizes = surface_sizes[ids_in_bbox]
-            surface_fields = surface_fields[ids_in_bbox]
+            if surface_fields is not None:
+                surface_fields = surface_fields[ids_in_bbox]
 
         # Compute the positional encoding before sampling
         if self.config.positional_encoding:
@@ -548,11 +556,15 @@ class DoMINODataPipe(Dataset):
                 if self.config.scaling_type == "mean_std_scaling":
                     surf_mean = self.config.surface_factors[0]
                     surf_std = self.config.surface_factors[1]
-                    surface_fields = standardize(surface_fields, surf_mean, surf_std)
+                    if surface_fields is not None:
+                        surface_fields = standardize(
+                            surface_fields, surf_mean, surf_std
+                        )
                 elif self.config.scaling_type == "min_max_scaling":
                     surf_min = self.config.surface_factors[1]
                     surf_max = self.config.surface_factors[0]
-                    surface_fields = normalize(surface_fields, surf_max, surf_min)
+                    if surface_fields is not None:
+                        surface_fields = normalize(surface_fields, surf_max, surf_min)
 
         return_dict.update(
             {
@@ -563,9 +575,10 @@ class DoMINODataPipe(Dataset):
                 "surface_neighbors_normals": surface_neighbors_normals,
                 "surface_areas": surface_sizes,
                 "surface_neighbors_areas": surface_neighbors_sizes,
-                "surface_fields": surface_fields,
             }
         )
+        if surface_fields is not None:
+            return_dict["surface_fields"] = surface_fields
 
         return return_dict
 
@@ -574,7 +587,7 @@ class DoMINODataPipe(Dataset):
         s_min: torch.Tensor,
         s_max: torch.Tensor,
         volume_coordinates: torch.Tensor,
-        volume_fields: torch.Tensor,
+        volume_fields: torch.Tensor | None,
         stl_vertices: torch.Tensor,
         mesh_indices_flattened: torch.Tensor,
         center_of_mass: torch.Tensor,
@@ -602,7 +615,8 @@ class DoMINODataPipe(Dataset):
             ids_in_bbox = ids_in_bbox.all(dim=1)
 
             volume_coordinates = volume_coordinates[ids_in_bbox]
-            volume_fields = volume_fields[ids_in_bbox]
+            if volume_fields is not None:
+                volume_fields = volume_fields[ids_in_bbox]
 
         dx, dy, dz = (
             (c_max[0] - c_min[0]) / nx,
@@ -646,8 +660,8 @@ class DoMINODataPipe(Dataset):
                     mode="constant",
                     value=-10.0,
                 )
-
-            volume_fields = volume_fields[idx_volume]
+            if volume_fields is not None:
+                volume_fields = volume_fields[idx_volume]
             volume_coordinates = volume_coordinates_sampled
 
         # Get the SDF of all the selected volume coordinates,
@@ -684,11 +698,13 @@ class DoMINODataPipe(Dataset):
                 if self.config.scaling_type == "mean_std_scaling":
                     vol_mean = self.config.volume_factors[0]
                     vol_std = self.config.volume_factors[1]
-                    volume_fields = standardize(volume_fields, vol_mean, vol_std)
+                    if volume_fields is not None:
+                        volume_fields = standardize(volume_fields, vol_mean, vol_std)
                 elif self.config.scaling_type == "min_max_scaling":
                     vol_min = self.config.volume_factors[1]
                     vol_max = self.config.volume_factors[0]
-                    volume_fields = normalize(volume_fields, vol_max, vol_min)
+                    if volume_fields is not None:
+                        volume_fields = normalize(volume_fields, vol_max, vol_min)
 
         vol_grid_max_min = torch.stack([c_min, c_max])
 
@@ -699,11 +715,12 @@ class DoMINODataPipe(Dataset):
                 "grid": grid,
                 "sdf_grid": sdf_grid,
                 "sdf_nodes": sdf_nodes,
-                "volume_fields": volume_fields,
                 "volume_mesh_centers": volume_coordinates,
                 "volume_min_max": vol_grid_max_min,
             }
         )
+        if volume_fields is not None:
+            return_dict["volume_fields"] = volume_fields
 
         return return_dict
 
@@ -724,10 +741,8 @@ class DoMINODataPipe(Dataset):
 
         # This function gets information about the surface scale,
         # and decides what the surface grid will be:
-        (s_min, s_max, length_scale, surf_grid_max_min, surf_grid) = (
-            self.compute_stl_scaling(
-                data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
-            )
+        (s_min, s_max, surf_grid_max_min, surf_grid) = self.compute_stl_scaling(
+            data_dict["stl_coordinates"], self.config.bounding_box_dims_surf
         )
 
         # This is a center of mass computation for the stl surface,
@@ -742,7 +757,6 @@ class DoMINODataPipe(Dataset):
 
         return_dict.update(
             {
-                "length_scale": length_scale,
                 "surface_min_max": surf_grid_max_min,
             }
         )
@@ -767,7 +781,9 @@ class DoMINODataPipe(Dataset):
                 s_min,
                 s_max,
                 volume_coordinates=data_dict["volume_mesh_centers"],
-                volume_fields=data_dict["volume_fields"],
+                volume_fields=data_dict["volume_fields"]
+                if "volume_fields" in data_dict
+                else None,
                 stl_vertices=data_dict["stl_coordinates"],
                 mesh_indices_flattened=mesh_indices_flattened,
                 center_of_mass=center_of_mass,
@@ -784,7 +800,9 @@ class DoMINODataPipe(Dataset):
                 surface_coordinates=data_dict["surface_mesh_centers"],
                 surface_normals=data_dict["surface_normals"],
                 surface_sizes=data_dict["surface_areas"],
-                surface_fields=data_dict["surface_fields"],
+                surface_fields=data_dict["surface_fields"]
+                if "surface_fields" in data_dict
+                else None,
             )
             return_dict.update(surface_dict)
 
@@ -797,6 +815,9 @@ class DoMINODataPipe(Dataset):
         Domino, in general, expects one example per file and the files
         are relatively large due to the mesh size.
         """
+
+        if self.dataset is None:
+            raise ValueError("Dataset is not present")
 
         index = self.idx_to_index(idx)
 
@@ -831,6 +852,9 @@ class DoMINODataPipe(Dataset):
         Start preprocessing for the given index (1 step ahead).
         This processes preloaded data or loads it if not available.
         """
+        if self.dataset is None:
+            raise ValueError("Dataset is not present")
+
         if idx in self._preprocess_queue:
             # Skip items that are already being preprocessed
             return
@@ -869,6 +893,10 @@ class DoMINODataPipe(Dataset):
         #   - the preprocessing pipe has to implicitly wait for idx +1 in the dataset
         # - wait for the preprocessing pipe at idx to finish
         # return the data.
+
+        if self.dataset is None:
+            raise ValueError("Dataset is not present")
+
         N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
 
         if self.i >= N:
@@ -893,6 +921,9 @@ class DoMINODataPipe(Dataset):
         # When starting the iterator method, start loading the data
         # at idx = 0, idx = 1
         # Start preprocessing at idx = 0, when the load completes
+
+        if self.dataset is None:
+            raise ValueError("Dataset is not present")
 
         self.i = 0
 
@@ -1087,12 +1118,25 @@ class CachedDoMINODataset(Dataset):
 
 
 def create_domino_dataset(
-    cfg, phase, volume_variable_names, surface_variable_names, vol_factors, surf_factors
+    cfg: DictConfig,
+    phase: Literal["train", "val", "test"],
+    volume_variable_names: list[str],
+    surface_variable_names: list[str],
+    vol_factors: list[float],
+    surf_factors: list[float],
+    normalize_coordinates: bool = True,
+    sample_in_bbox: bool = True,
+    sampling: bool = True,
 ):
     if phase == "train":
         input_path = cfg.data.input_dir
+        model_type = cfg.model.model_type
     elif phase == "val":
         input_path = cfg.data.input_dir_val
+        model_type = cfg.model.model_type
+    elif phase == "test":
+        input_path = cfg.eval.test_path
+        model_type = "inference"
     else:
         raise ValueError(f"Invalid phase {phase}")
 
@@ -1100,7 +1144,7 @@ def create_domino_dataset(
         return CachedDoMINODataset(
             input_path,
             phase=phase,
-            sampling=True,
+            sampling=sampling,
             volume_points_sample=cfg.model.volume_points_sample,
             surface_points_sample=cfg.model.surface_points_sample,
             geom_points_sample=cfg.model.geom_points_sample,
@@ -1121,9 +1165,9 @@ def create_domino_dataset(
             grid_resolution=cfg.model.interp_res,
             volume_variables=volume_variable_names,
             surface_variables=surface_variable_names,
-            normalize_coordinates=True,
-            sampling=True,
-            sample_in_bbox=True,
+            normalize_coordinates=normalize_coordinates,
+            sampling=sampling,
+            sample_in_bbox=sample_in_bbox,
             volume_points_sample=cfg.model.volume_points_sample,
             surface_points_sample=cfg.model.surface_points_sample,
             geom_points_sample=cfg.model.geom_points_sample,
@@ -1131,7 +1175,7 @@ def create_domino_dataset(
             volume_factors=vol_factors,
             surface_factors=surf_factors,
             scaling_type=cfg.model.normalization,
-            model_type=cfg.model.model_type,
+            model_type=model_type,
             bounding_box_dims=cfg.data.bounding_box,
             bounding_box_dims_surf=cfg.data.bounding_box_surface,
             num_surface_neighbors=cfg.model.num_neighbors_surface,
