@@ -14,24 +14,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO
-# TODO
-# TODO
-# Update this
-# TODO
-# TODO
-# TODO
 """
-This code defines a distributed pipeline for training the DoMINO model on
-CFD datasets. It includes the computation of scaling factors, instantiating
-the DoMINO model and datapipe, automatically loading the most recent checkpoint,
-training the model in parallel using DistributedDataParallel across multiple
-GPUs, calculating the loss and updating model parameters using mixed precision.
-This is a common recipe that enables training of combined models for surface and
-volume as well either of them separately. Validation is also conducted every epoch,
-where predictions are compared against ground truth values. The code logs training
-and validation metrics to TensorBoard. The train tab in config.yaml can be used to
-specify batch size, number of epochs and other training parameters.
+This code shows how to use a trained DoMINO model, with it's corresponding
+preprocessing pipeline, to infer values on and around an STL mesh file.
+
+This script uses the meshes from the DrivaerML dataset, however, the logic
+is largely the same.  As an overview:
+- Load the model
+- Set up the preprocessor
+- Loop over meshes
+- In each mesh, sample random points on the surface, volume, or both
+- Preprocess the points and run them through the model
+- Process the STL mesh centers, too
+- Collect the results and return
+- Save the results to file.
 """
 
 import time
@@ -346,11 +342,6 @@ def inference_epoch(
     # Convert the indices right to a list:
     epoch_indices = list(sampler)
 
-    # n_steps = total_points // batch_size
-    # if n_steps * batch_size < total_points:
-    #     n_steps += 1
-    #     last_batch_size = total_points - n_steps * batch_size
-
     ######################################################
     # Assuming here there are more than two target meshes
     # This will get the IO pipe running in the background
@@ -423,9 +414,6 @@ def inference_epoch(
         logger.info(
             f"Batch {i_batch} output time: {output_end_time - output_start_time:.3f} seconds"
         )
-
-        if i_batch > 5:
-            break
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
