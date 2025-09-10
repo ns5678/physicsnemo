@@ -727,13 +727,10 @@ class DoMINODataPipe(Dataset):
         return return_dict
 
     @torch.no_grad()
-    def process_data(self, data_dict, idx: int):
+    def process_data(self, data_dict):
         for key in self.keys_to_read_if_available.keys():
             if key not in data_dict:
                 data_dict[key] = self.keys_to_read_if_available[key]
-
-        if self.config.deterministic:
-            torch.manual_seed(idx)
 
         # Start building the preprocessed return dict:
         return_dict = {

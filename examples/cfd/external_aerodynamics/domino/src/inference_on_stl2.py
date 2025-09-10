@@ -97,17 +97,170 @@ from loss import compute_loss_dict
 from utils import get_num_vars
 
 
+def inference_on_single_stl(
+    stl_coordinates: torch.Tensor,
+    stl_faces: torch.Tensor,
+    model: DoMINO,
+    datapipe: DoMINODataPipe,
+    batch_size: int,
+    total_points: int,
+    gpu_handle: int | None = None,
+    logger: PythonLogger | None = None,
+):
+    device = stl_coordinates.device
+    batch_start_time = time.perf_counter()
+    ######################################################
+    # The IO only reads in "stl_faces" and "stl_coordinates".
+    # "stl_areas" and "stl_centers" would be computed by
+    # pyvista on CPU - instead, we do it on the GPU
+    # right here.
+    ######################################################
+
+    # Center is a mean of the 3 vertices
+    triangle_vertices = stl_coordinates[stl_faces.reshape((-1, 3))]
+    stl_centers = triangle_vertices.mean(dim=-1)
+    ######################################################
+    # Area we compute from the cross product of two sides:
+    ######################################################
+    d1 = triangle_vertices[:, 1] - triangle_vertices[:, 0]
+    d2 = triangle_vertices[:, 2] - triangle_vertices[:, 0]
+    inferred_mesh_normals = torch.linalg.cross(d1, d2, dim=1)
+    normals_norm = torch.linalg.norm(inferred_mesh_normals, dim=1)
+    inferred_mesh_normals = inferred_mesh_normals / normals_norm.unsqueeze(1)
+    stl_areas = 0.5 * normals_norm
+
+    ######################################################
+    # For computing the points, we take those stl objects,
+    # sample in chunks of `batch_size` until we've
+    # accumulated `total_points` predictions.
+    ######################################################
+
+    batch_output_dict = {}
+    N = 2
+    total_points_processed = 0
+    while total_points_processed < total_points:
+        inner_loop_start_time = time.perf_counter()
+
+        ######################################################
+        # This function will sample points on the STL surface
+        ######################################################
+        sampled_points, sampled_faces, sampled_areas, sampled_normals = (
+            sample_points_on_mesh(
+                stl_coordinates,
+                stl_faces,
+                batch_size,
+                mesh_normals=inferred_mesh_normals,
+                mesh_areas=stl_areas,
+            )
+        )
+
+        ######################################################
+        # Build up volume points too with uniform sampling
+        # TODO - this doesn't filter points that are
+        # internal to the mesh
+        ######################################################
+        c_min = datapipe.config.bounding_box_dims[1]
+        c_max = datapipe.config.bounding_box_dims[0]
+
+        sampled_volume_points = (c_max - c_min) * torch.rand(
+            batch_size, 3, device=device, dtype=torch.float32
+        ) + c_min
+
+        ######################################################
+        # Create the dictionary as the preprocessing expects:
+        ######################################################
+        inference_dict = {
+            "stl_coordinates": stl_coordinates,
+            "stl_faces": stl_faces,
+            "stl_centers": stl_centers,
+            "stl_areas": stl_areas,
+            "surface_mesh_centers": sampled_points,
+            "surface_normals": sampled_normals,
+            "surface_areas": sampled_areas,
+            "surface_faces": sampled_faces,
+            "volume_mesh_centers": sampled_volume_points,
+        }
+
+        ######################################################
+        # Pre-process the data with the datapipe:
+        ######################################################
+        preprocessed_data = datapipe.process_data(inference_dict)
+
+        ######################################################
+        # Use the sign of the volume SDF to filter out points
+        # That are inside the STL mesh
+        ######################################################
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+
+        ######################################################
+        # Add a batch dimension to the data_dict
+        # (normally this is added in __getitem__ of the datapipe)
+        ######################################################
+        preprocessed_data = {k: v.unsqueeze(0) for k, v in preprocessed_data.items()}
+
+        ######################################################
+        # Forward pass through the model:
+        ######################################################
+        with torch.no_grad():
+            output_vol, output_surf = model(preprocessed_data)
+
+        ######################################################
+        # unnormalize the outputs with the datapipe
+        # Whatever settings are configured for normalizing the
+        # output fields - even though we don't have ground
+        # truth here - are reused to undo that for the predictions
+        ######################################################
+        output_vol, output_surf = datapipe.unscale_model_outputs(
+            output_vol, output_surf
+        )
+
+        ######################################################
+        # Peel off pressure, velocity, nut, shear, etc.
+        # Also compute drag, lift forces.
+        ######################################################
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+
+        total_points_processed += batch_size
+
+        current_loop_time = time.perf_counter()
+
+        logging_string = f"Device {device} processed {total_points_processed} points of {total_points}\n"
+        if gpu_handle is not None:
+            gpu_info = nvmlDeviceGetMemoryInfo(gpu_handle)
+            gpu_memory_used = gpu_info.used / (1024**3)
+            logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb\n"
+
+        logging_string += f"  Time taken since batch start: {current_loop_time - batch_start_time:.2f} seconds\n"
+        logging_string += f"  iteration throughput: {batch_size / (current_loop_time - inner_loop_start_time):.1f} points per second\n"
+        logging_string += f"  Batch mean throughput: {total_points_processed / (current_loop_time - batch_start_time):.1f} points per second.\n"
+
+        if logger is not None:
+            logger.info(logging_string)
+        else:
+            print(logging_string)
+
+
 def inference_epoch(
     dataset: DrivaerMLDataset,
     sampler: DistributedSampler,
     datapipe: DoMINODataPipe,
     model: DoMINO,
     gpu_handle: int,
-    device: torch.device,
     logger: PythonLogger,
     batch_size: int = 24_000,
     total_points: int = 1_024_000,
-) -> float:
+):
     ######################################################
     # Inference can run in a distributed way by coordinating
     # the indices for each rank, which the sampler does
@@ -151,146 +304,16 @@ def inference_epoch(
         )
 
         procesing_time_start = time.perf_counter()
-
-        ######################################################
-        # The IO only reads in "stl_faces" and "stl_coordinates".
-        # "stl_areas" and "stl_centers" would be computed by
-        # pyvista on CPU - instead, we do it on the GPU
-        # right here.
-        ######################################################
-
-        # Center is a mean of the 3 vertices
-        triangle_vertices = sample_batched["stl_coordinates"][
-            sample_batched["stl_faces"].reshape((-1, 3))
-        ]
-        sample_batched["stl_centers"] = triangle_vertices.mean(dim=-1)
-        ######################################################
-        # Area we compute from the cross product of two sides:
-        ######################################################
-        d1 = triangle_vertices[:, 1] - triangle_vertices[:, 0]
-        d2 = triangle_vertices[:, 2] - triangle_vertices[:, 0]
-        inferred_mesh_normals = torch.linalg.cross(d1, d2, dim=1)
-        normals_norm = torch.linalg.norm(inferred_mesh_normals, dim=1)
-        sample_batched["stl_areas"] = 0.5 * normals_norm
-
-        ######################################################
-        # For computing the points, we take those stl objects,
-        # sample in chunks of `batch_size` until we've
-        # accumulated `total_points` predictions.
-        ######################################################
-
-        batch_output_dict = {}
-        N = 2
-        total_points_processed = 0
-        while total_points_processed < total_points:
-            inner_loop_start_time = time.perf_counter()
-
-            ######################################################
-            # This function will sample points on the STL surface
-            ######################################################
-            sampled_points, sampled_faces, sampled_areas, sampled_normals = (
-                sample_points_on_mesh(
-                    sample_batched["stl_coordinates"],
-                    sample_batched["stl_faces"],
-                    batch_size,
-                    mesh_normals=sample_batched["surface_normals"],
-                    mesh_areas=sample_batched["stl_areas"],
-                )
-            )
-
-            ######################################################
-            # Build up volume points too with uniform sampling
-            # TODO - this doesn't filter points that are
-            # internal to the mesh
-            ######################################################
-            c_min = datapipe.config.bounding_box_dims[1]
-            c_max = datapipe.config.bounding_box_dims[0]
-
-            sampled_volume_points = (c_max - c_min) * torch.rand(
-                batch_size, 3, device=device, dtype=torch.float32
-            ) + c_min
-
-            ######################################################
-            # Create the dictionary as the preprocessing expects:
-            ######################################################
-            inference_dict = {
-                "stl_coordinates": sample_batched["stl_coordinates"],
-                "stl_faces": sample_batched["stl_faces"],
-                "stl_centers": sample_batched["stl_centers"],
-                "stl_areas": sample_batched["stl_areas"],
-                "surface_mesh_centers": sampled_points,
-                "surface_normals": sampled_normals,
-                "surface_areas": sampled_areas,
-                "surface_faces": sampled_faces,
-                "volume_mesh_centers": sampled_volume_points,
-            }
-
-            ######################################################
-            # Pre-process the data with the datapipe:
-            ######################################################
-            preprocessed_data = datapipe.process_data(inference_dict, i_batch)
-
-            ######################################################
-            # Use the sign of the volume SDF to filter out points
-            # That are inside the STL mesh
-            ######################################################
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-
-            ######################################################
-            # Add a batch dimension to the data_dict
-            # (normally this is added in __getitem__ of the datapipe)
-            ######################################################
-            preprocessed_data = {
-                k: v.unsqueeze(0) for k, v in preprocessed_data.items()
-            }
-
-            ######################################################
-            # Forward pass through the model:
-            ######################################################
-            with torch.no_grad():
-                output_vol, output_surf = model(preprocessed_data)
-
-            ######################################################
-            # unnormalize the outputs with the datapipe
-            # Whatever settings are configured for normalizing the
-            # output fields - even though we don't have ground
-            # truth here - are reused to undo that for the predictions
-            ######################################################
-            output_vol, output_surf = datapipe.unscale_model_outputs(
-                output_vol, output_surf
-            )
-
-            ######################################################
-            # Peel off pressure, velocity, nut, shear, etc.
-            # Also compute drag, lift forces.
-            ######################################################
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-            # TODO
-
-            total_points_processed += batch_size
-
-            current_loop_time = time.perf_counter()
-
-            gpu_info = nvmlDeviceGetMemoryInfo(gpu_handle)
-            gpu_memory_used = gpu_info.used / (1024**3)
-
-            logging_string = f"Device {device}, batch {i_batch} processed {total_points_processed} points of {total_points}\n"
-            logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb\n"
-            logging_string += f"  Time taken since batch start: {current_loop_time - batch_start_time:.2f} seconds\n"
-            logging_string += f"  iteration throughput: {batch_size / (current_loop_time - inner_loop_start_time):.1f} points per second\n"
-            logging_string += f"  Batch mean throughput: {total_points_processed / (current_loop_time - batch_start_time):.1f} points per second (includes IO)\n"
-
-            logger.info(logging_string)
+        inference_on_single_stl(
+            sample_batched["stl_coordinates"],
+            sample_batched["stl_faces"],
+            model,
+            datapipe,
+            batch_size,
+            total_points,
+            gpu_handle,
+            logger,
+        )
 
         procesing_time_end = time.perf_counter()
         logger.info(
@@ -518,7 +541,6 @@ def main(cfg: DictConfig) -> None:
             model=model,
             logger=logger,
             gpu_handle=gpu_handle,
-            device=dist.device,
             batch_size=sample_points,
             total_points=cfg.eval.num_points,
         )
