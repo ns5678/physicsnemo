@@ -224,6 +224,17 @@ def inference_epoch(
             preprocessed_data = datapipe.process_data(inference_dict, i_batch)
 
             ######################################################
+            # Use the sign of the volume SDF to filter out points
+            # That are inside the STL mesh
+            ######################################################
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+            # TODO
+
+            ######################################################
             # Add a batch dimension to the data_dict
             # (normally this is added in __getitem__ of the datapipe)
             ######################################################
@@ -483,14 +494,10 @@ def main(cfg: DictConfig) -> None:
         device=dist.device,
     )
 
-    initial_integral_factor_orig = cfg.model.integral_loss_scaling_factor
-
     start_time = time.perf_counter()
 
     # This controls what indices to use for each epoch.
     test_sampler.set_epoch(0)
-
-    initial_integral_factor = initial_integral_factor_orig
 
     prof = Profiler()
 
