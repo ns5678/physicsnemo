@@ -14,6 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# TODO
+# TODO
+# TODO
+# Update this
+# TODO
+# TODO
+# TODO
 """
 This code defines a distributed pipeline for training the DoMINO model on
 CFD datasets. It includes the computation of scaling factors, instantiating
