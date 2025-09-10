@@ -107,6 +107,25 @@ def inference_on_single_stl(
     gpu_handle: int | None = None,
     logger: PythonLogger | None = None,
 ):
+    """
+    Perform model inference on a single STL mesh.
+
+    This function will take the input mesh + faces and
+    then sample the surface and volume to produce the model outputs
+    at `total_points` locations in batches of `batch_size`.
+
+
+
+    Args:
+        stl_coordinates: The coordinates of the STL mesh.
+        stl_faces: The faces of the STL mesh.
+        model: The model to use for inference.
+        datapipe: The datapipe to use for preprocessing.
+        batch_size: The batch size to use for inference.
+        total_points: The total number of points to process.
+        gpu_handle: The GPU handle to use for inference.
+        logger: The logger to use for logging.
+    """
     device = stl_coordinates.device
     batch_start_time = time.perf_counter()
     ######################################################
@@ -124,9 +143,9 @@ def inference_on_single_stl(
     ######################################################
     d1 = triangle_vertices[:, 1] - triangle_vertices[:, 0]
     d2 = triangle_vertices[:, 2] - triangle_vertices[:, 0]
-    inferred_mesh_normals = torch.linalg.cross(d1, d2, dim=1)
-    normals_norm = torch.linalg.norm(inferred_mesh_normals, dim=1)
-    inferred_mesh_normals = inferred_mesh_normals / normals_norm.unsqueeze(1)
+    stl_mesh_normals = torch.linalg.cross(d1, d2, dim=1)
+    normals_norm = torch.linalg.norm(stl_mesh_normals, dim=1)
+    stl_mesh_normals = stl_mesh_normals / normals_norm.unsqueeze(1)
     stl_areas = 0.5 * normals_norm
 
     ######################################################
@@ -138,33 +157,13 @@ def inference_on_single_stl(
     batch_output_dict = {}
     N = 2
     total_points_processed = 0
+
+    # Use these lists to build up the output tensors:
+    surface_results = []
+    volume_results = []
+
     while total_points_processed < total_points:
         inner_loop_start_time = time.perf_counter()
-
-        ######################################################
-        # This function will sample points on the STL surface
-        ######################################################
-        sampled_points, sampled_faces, sampled_areas, sampled_normals = (
-            sample_points_on_mesh(
-                stl_coordinates,
-                stl_faces,
-                batch_size,
-                mesh_normals=inferred_mesh_normals,
-                mesh_areas=stl_areas,
-            )
-        )
-
-        ######################################################
-        # Build up volume points too with uniform sampling
-        # TODO - this doesn't filter points that are
-        # internal to the mesh
-        ######################################################
-        c_min = datapipe.config.bounding_box_dims[1]
-        c_max = datapipe.config.bounding_box_dims[0]
-
-        sampled_volume_points = (c_max - c_min) * torch.rand(
-            batch_size, 3, device=device, dtype=torch.float32
-        ) + c_min
 
         ######################################################
         # Create the dictionary as the preprocessing expects:
@@ -174,28 +173,60 @@ def inference_on_single_stl(
             "stl_faces": stl_faces,
             "stl_centers": stl_centers,
             "stl_areas": stl_areas,
-            "surface_mesh_centers": sampled_points,
-            "surface_normals": sampled_normals,
-            "surface_areas": sampled_areas,
-            "surface_faces": sampled_faces,
-            "volume_mesh_centers": sampled_volume_points,
         }
+
+        # If the surface data is part of the model, sample the surface:
+
+        if datapipe.model_type == "surface" or datapipe.model_type == "combined":
+            ######################################################
+            # This function will sample points on the STL surface
+            ######################################################
+            sampled_points, sampled_faces, sampled_areas, sampled_normals = (
+                sample_points_on_mesh(
+                    stl_coordinates,
+                    stl_faces,
+                    batch_size,
+                    mesh_normals=stl_mesh_normals,
+                    mesh_areas=stl_areas,
+                )
+            )
+
+            inference_dict["surface_mesh_centers"] = sampled_points
+            inference_dict["surface_normals"] = sampled_normals
+            inference_dict["surface_areas"] = sampled_areas
+            inference_dict["surface_faces"] = sampled_faces
+
+        # If the volume data is part of the model, sample the volume:
+        if datapipe.model_type == "volume" or datapipe.model_type == "combined":
+            ######################################################
+            # Build up volume points too with uniform sampling
+            # TODO - this doesn't filter points that are
+            # internal to the mesh
+            ######################################################
+            c_min = datapipe.config.bounding_box_dims[1]
+            c_max = datapipe.config.bounding_box_dims[0]
+
+            sampled_volume_points = (c_max - c_min) * torch.rand(
+                batch_size, 3, device=device, dtype=torch.float32
+            ) + c_min
+
+            inference_dict["volume_mesh_centers"] = (sampled_volume_points,)
 
         ######################################################
         # Pre-process the data with the datapipe:
         ######################################################
         preprocessed_data = datapipe.process_data(inference_dict)
 
-        ######################################################
-        # Use the sign of the volume SDF to filter out points
-        # That are inside the STL mesh
-        ######################################################
-        # TODO
-        # TODO
-        # TODO
-        # TODO
-        # TODO
-        # TODO
+        if datapipe.model_type == "volume" or datapipe.model_type == "combined":
+            ######################################################
+            # Use the sign of the volume SDF to filter out points
+            # That are inside the STL mesh
+            ######################################################
+            sdf_nodes = preprocessed_data["sdf_nodes"]
+            valid_volume_idx = sdf_nodes > 0
+            preprocessed_data["volume_mesh_centers"] = preprocessed_data[
+                "volume_mesh_centers"
+            ][valid_volume_idx]
 
         ######################################################
         # Add a batch dimension to the data_dict
@@ -219,17 +250,8 @@ def inference_on_single_stl(
             output_vol, output_surf
         )
 
-        ######################################################
-        # Peel off pressure, velocity, nut, shear, etc.
-        # Also compute drag, lift forces.
-        ######################################################
-        # TODO
-        # TODO
-        # TODO
-        # TODO
-        # TODO
-        # TODO
-        # TODO
+        surface_results.append(output_surf)
+        volume_results.append(output_vol)
 
         total_points_processed += batch_size
 
@@ -249,6 +271,61 @@ def inference_on_single_stl(
             logger.info(logging_string)
         else:
             print(logging_string)
+
+    ######################################################
+    # Here at the end, get the values for the stl centers
+    # by updating the previous inference dict
+    # Only do this if the surface is part of the computation
+    # Comments are shorter here - it's a condensed version
+    # of the above logic.
+    ######################################################
+    if datapipe.model_type == "surface" or datapipe.model_type == "combined":
+        stl_inference_dict = {
+            "stl_coordinates": stl_coordinates,
+            "stl_faces": stl_faces,
+            "stl_centers": stl_centers,
+            "stl_areas": stl_areas,
+        }
+        inference_dict["surface_mesh_centers"] = stl_centers
+        inference_dict["surface_normals"] = stl_mesh_normals
+        inference_dict["surface_areas"] = stl_areas
+        inference_dict["surface_faces"] = stl_faces
+
+        # Just reuse the previous volume samples here if needed:
+        if datapipe.model_type == "combined":
+            inference_dict["volume_mesh_centers"] = sampled_volume_points
+
+        # Preprocess:
+        preprocessed_data = datapipe.process_data(inference_dict)
+
+        # Pull out the invalid volume points again, if needed:
+        if datapipe.model_type == "combined":
+            sdf_nodes = preprocessed_data["sdf_nodes"]
+            valid_volume_idx = sdf_nodes > 0
+            preprocessed_data["volume_mesh_centers"] = preprocessed_data[
+                "volume_mesh_centers"
+            ][valid_volume_idx]
+
+        # Run the model forward:
+        with torch.no_grad():
+            preprocessed_data = {
+                k: v.unsqueeze(0) for k, v in preprocessed_data.items()
+            }
+            _, output_surf = model(preprocessed_data)
+
+        # Unnormalize the outputs:
+        _, stl_center_results = datapipe.unscale_model_outputs(None, output_surf)
+
+    else:
+        stl_center_results = None
+
+    # Stack up the results into one big tensor for surface and volume:
+    if all([s is not None for s in surface_results]):
+        surface_results = torch.cat(surface_results, dim=1)
+    if all([v is not None for v in volume_results]):
+        volume_results = torch.cat(volume_results, dim=0)
+
+    return stl_center_results, surface_results, volume_results
 
 
 def inference_epoch(
@@ -304,7 +381,7 @@ def inference_epoch(
         )
 
         procesing_time_start = time.perf_counter()
-        inference_on_single_stl(
+        stl_center_resulst, surface_results, volume_results = inference_on_single_stl(
             sample_batched["stl_coordinates"],
             sample_batched["stl_faces"],
             model,
@@ -314,6 +391,18 @@ def inference_epoch(
             gpu_handle,
             logger,
         )
+
+        ######################################################
+        # Peel off pressure, velocity, nut, shear, etc.
+        # Also compute drag, lift forces.
+        ######################################################
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
+        # TODO
 
         procesing_time_end = time.perf_counter()
         logger.info(
