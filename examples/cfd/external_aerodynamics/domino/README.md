@@ -77,19 +77,24 @@ please refer to their [paper](https://arxiv.org/pdf/2408.11969).
 
 #### Data Preprocessing
 
-`PhysicsNeMo` has a related project to help with data processing, called [PhysicsNeMo-Curator](https://github.com/NVIDIA/physicsnemo-curator).
+`PhysicsNeMo` has a related project to help with data processing, called
+[PhysicsNeMo-Curator](https://github.com/NVIDIA/physicsnemo-curator).
 Using `PhysicsNeMo-Curator`, the data needed to train a DoMINO model can be setup easily.
-Please refer to [these instructions on getting started](https://github.com/NVIDIA/physicsnemo-curator?tab=readme-ov-file#what-is-physicsnemo-curator)
+Please refer to
+[these instructions on getting started](https://github.com/NVIDIA/physicsnemo-curator?tab=readme-ov-file#what-is-physicsnemo-curator)
 with `PhysicsNeMo-Curator`.
 
-Download the DrivAer ML dataset using the [provided instructions in PhysicsNeMo-Curator](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/domino/README.md#download-drivaerml-dataset).
+Download the DrivAer ML dataset using the
+[provided instructions in PhysicsNeMo-Curator](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/domino/README.md#download-drivaerml-dataset).
 The first step for running the DoMINO pipeline requires processing the raw data
 (vtp, vtu and stl) into either Zarr or NumPy format for training.
 Each of the raw simulations files are downloaded in `vtp`, `vtu` and `stl` formats.
 For instructions on running data processing to produce a DoMINO training ready dataset,
-please refer to [How-to Curate data for DoMINO Model](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/domino/README.md).
+please refer to
+[How-to Curate data for DoMINO Model](https://github.com/NVIDIA/physicsnemo-curator/blob/main/examples/external_aerodynamics/domino/README.md).
 
-Caching is implemented in [`CachedDoMINODataset`](https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/datapipes/cae/domino_datapipe.py#L1250).
+Caching is implemented in
+[`CachedDoMINODataset`](https://github.com/NVIDIA/physicsnemo/blob/main/physicsnemo/datapipes/cae/domino_datapipe.py#L1250).
 Optionally, users can run `cache_data.py` to save outputs
 of DoMINO datapipe in the `.npy` files. The DoMINO datapipe is set up to calculate
 Signed Distance Field and Nearest Neighbor interpolations on-the-fly during
@@ -100,6 +105,36 @@ processed files.
 
 The final processed dataset should be divided and saved into 2 directories,
 for training and validation.
+
+#### Data Scaling factors
+
+DoMINO has several data-specific configuration tools that rely on some
+knowledge of the dataset:
+
+- The output fields (the labels) are normalized during training to a mean
+  of zero and a standard deviation of one, averaged over the dataset.
+  The scaling is controlled by passing the `volume_factors` and
+  `surface_factors` values to the datapipe.
+- The input locations are scaled by, and optionally cropped to, used defined
+  bounding boxes for both surface and volume.  Whether cropping occurs, or not,
+  is controlled by the `sample_in_bbox` value of the datapipe.  Normalization
+  to the bounding box is enabled with `normalize_coordinates`.  By default,
+  both are set to true.  The value of the boxes are configured in the
+  `config.yaml` file, and are configured separately for surface and volume.
+
+> Note: The datapipe module has a helper function `create_domino_dataset`
+> with sensible defaults to help create a Domino Datapipe.
+
+To facilitate setting reasonable values of these, you can use the
+`compute_statistics.py` script.  This will load the core dataset as defined
+in your `config.yaml` file, loop over several events (20, by default), and
+both print and store the surface/volume field statistics as well as the
+coordinate statistics.  
+
+> Note that, for volumetric fields especially, the min/max found may be
+> significantly outside the surface region.  Many simulations extend volumetric
+> sampling to far field, and you may instead want to crop significant amounts
+> of volumetric distance.
 
 #### Training
 
@@ -188,6 +223,35 @@ sharded training.  This technique launches vectorized kernels with less
 launch overhead at the cost of more memory use.  For non-sharded
 training, the `two-loop` setting is more optimal. The difference in `one-loop`
 or `two-loop` is purely computational, not algorithmic.
+
+### Performance Optimizations
+
+The training and inference scripts for DoMINO contain several performance
+enhancements to accelerate the training and usage of the model. In this
+section we'll highlight several of them, as well as how to customize them
+if needed.
+
+#### Memory Pool Optimizations
+
+The preprocessor of DoMINO requires a computation of k Nearest Neighbors,
+which is accelerated via the `cuml` Neighbors tool.  By default, `cuml` and
+`torch` both use memory allocation pools to speed up allocating tensors, but
+they do not use the same pool.  This means that during preprocessing, it's
+possible for the kNN operation to spend a significant amount of time in
+memory allocations - and further, it limits the available memory to `torch`.
+
+To mitigate this, by default in DoMINO we use the Rapids Memory Manager
+([`rmm`](https://github.com/rapidsai/rmm)).  If, for some reason, you wish
+to disable this you can do so with an environment variable:
+
+```bash
+export DOMINO_DISABLE_RMM=True
+```
+
+> Note - why not make it configurable?  We have to set up the shared memory
+> pool allocation very early in the program, before the config has even
+> been read.  So, we enable by default and the opt-out path is via the
+> environment.
 
 ### Training with Physics Losses
 

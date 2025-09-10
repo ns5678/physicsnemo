@@ -30,9 +30,6 @@ specify batch size, number of epochs and other training parameters.
 import time
 import os
 import re
-import torch
-import torchinfo
-
 from typing import Literal, Any
 
 import apex
@@ -40,6 +37,18 @@ import numpy as np
 import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
+
+
+DISABLE_RMM = os.environ.get("DOMINO_DISABLE_RMM", "False")
+if not DISABLE_RMM:
+    import rmm
+    from rmm.allocators.torch import rmm_torch_allocator
+    import torch
+
+    rmm.reinitialize(pool_allocator=True)
+    torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
+
+import torchinfo
 import torch.distributed as dist
 from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
@@ -66,6 +75,7 @@ from utils import ScalingFactors
 # This is included for GPU memory tracking:
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import time
+
 
 # Initialize NVML
 nvmlInit()
