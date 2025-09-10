@@ -256,7 +256,6 @@ def calculate_normal_positional_encoding(
         pos_x = torch.cat(calculate_pos_encoding(normals[:, 0] / dx, d=4), dim=-1)
         pos_y = torch.cat(calculate_pos_encoding(normals[:, 1] / dy, d=4), dim=-1)
         pos_z = torch.cat(calculate_pos_encoding(normals[:, 2] / dz, d=4), dim=-1)
-        print(pos_x.shape, pos_y.shape, pos_z.shape)
         pos_normals = torch.cat((pos_x, pos_y, pos_z), dim=0).reshape(-1, 12)
 
     return pos_normals
