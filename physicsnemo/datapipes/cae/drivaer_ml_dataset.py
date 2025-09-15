@@ -21,7 +21,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import zarr
+from torch.distributed.tensor import Replicate, Shard
 
 try:
     import tensorstore as ts
@@ -38,9 +40,7 @@ except ImportError:
     PV_AVAILABLE = False
 
 from physicsnemo.distributed import ShardTensor, ShardTensorSpec
-
-# from physicsnemo.distributed.utils import compute_split_shapes
-
+from physicsnemo.distributed.utils import compute_split_shapes
 
 # Abstractions:
 # - want to read npy/npz/.zarr/.stl/.vtp files
@@ -67,11 +67,16 @@ class BackendReader(ABC):
     Abstract base class for backend readers.
     """
 
-    def __init__(self, keys_to_read: list[str] | None) -> None:
+    def __init__(
+        self,
+        keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
+    ) -> None:
         """
         Initialize the backend reader.
         """
         self.keys_to_read = keys_to_read
+        self.keys_to_read_if_available = keys_to_read_if_available
 
     @abstractmethod
     def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
@@ -82,12 +87,63 @@ class BackendReader(ABC):
 
     @abstractmethod
     def read_file_sharded(
-        self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
-    ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+        self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+    ) -> tuple[dict[str, torch.Tensor], dict[str, dict]]:
         """
-        Read a file and return a dictionary of tensors.
+        Read a file and return a dictionary of tensors ready to convert to ShardTensors.
+
+        NOTE: this function does not actually convert torch tensors to ShardTensors.
+        It's possible that the conversion, in some cases, can be a collective function.
+        Due to the async nature of the loader, we don't rely on any ordering of
+        collectives and defer them to the last possible minute.
+
+        Additionally, these functions return CPU tensors and we don't actually
+        define shard tensors on cpu.
+
+        So, the dataset itself will convert a local tensor + shard info to shard tensor
+        after the cpu-> gpu movement.
         """
         pass
+
+    def fill_optional_keys(
+        self, data: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """
+        Fill missing keys with the keys from the keys_to_read_if_available dictionary.
+        """
+        for key in self.keys_to_read_if_available:
+            if key not in data.keys():
+                data[key] = self.keys_to_read_if_available[key]
+        return data
+
+    def _get_slice_boundaries(
+        self, array_shape: tuple[int], this_rank: int, n_splits: int, split_dim: int = 0
+    ) -> tuple[int, int, tuple | None]:
+        """
+        For an array, determine the slice boundaries for parallel reading.
+
+        Args:
+            array_shape: The total shape of the target array.
+            this_rank: The rank of the distributed process.
+            n_splits: The size of the distributed process.
+            split_dim: The dimension to split, default is 0.
+
+        Returns:
+            The slice boundaries for parallel reading.
+        """
+        # Determine what slice this rank should read
+
+        sections = compute_split_shapes(array_shape[split_dim], n_splits)
+
+        global_chunk_start = sum(sections[:this_rank])
+        global_chunk_stop = global_chunk_start + sections[this_rank]
+
+        chunk_sizes = tuple(
+            array_shape[:split_dim] + (section,) + array_shape[split_dim + 1 :]
+            for section in sections
+        )
+
+        return global_chunk_start, global_chunk_stop, chunk_sizes
 
 
 class NpyFileReader(BackendReader):
@@ -95,8 +151,12 @@ class NpyFileReader(BackendReader):
     Reader for numpy files.
     """
 
-    def __init__(self, keys_to_read: list[str] | None) -> None:
-        super().__init__(keys_to_read)
+    def __init__(
+        self,
+        keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
+    ) -> None:
+        super().__init__(keys_to_read, keys_to_read_if_available)
 
     def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
         """
@@ -111,11 +171,11 @@ class NpyFileReader(BackendReader):
 
         data = {key: torch.from_numpy(data[key]) for key in self.keys_to_read}
 
-        return data
+        return self.fill_optional_keys(data)
 
     def read_file_sharded(
-        self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
-    ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+        self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+    ) -> dict[str, ShardTensor]:
         pass
 
 
@@ -124,8 +184,12 @@ class NpzFileReader(BackendReader):
     Reader for npz files.
     """
 
-    def __init__(self, keys_to_read: list[str] | None) -> None:
-        super().__init__(keys_to_read)
+    def __init__(
+        self,
+        keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
+    ) -> None:
+        super().__init__(keys_to_read, keys_to_read_if_available)
 
     def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
         """
@@ -140,11 +204,11 @@ class NpzFileReader(BackendReader):
 
         data = {key: torch.from_numpy(in_data[key][:]) for key in self.keys_to_read}
 
-        return data
+        return self.fill_optional_keys(data)
 
     def read_file_sharded(
-        self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
-    ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+        self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+    ) -> dict[str, ShardTensor]:
         pass
 
 
@@ -153,8 +217,12 @@ class ZarrFileReader(BackendReader):
     Reader for zarr files.
     """
 
-    def __init__(self, keys_to_read: list[str] | None) -> None:
-        super().__init__(keys_to_read)
+    def __init__(
+        self,
+        keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
+    ) -> None:
+        super().__init__(keys_to_read, keys_to_read_if_available)
 
     def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
         """
@@ -170,15 +238,78 @@ class ZarrFileReader(BackendReader):
         # This is a slower basic way to do this, to be improved:
         data = {key: torch.from_numpy(group[key][:]) for key in self.keys_to_read}
 
-        return data
+        return self.fill_optional_keys(data)
 
     def read_file_sharded(
-        self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
-    ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+        self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+    ) -> tuple[dict[str, torch.Tensor], dict[str, dict]]:
         """
         Read a file and return a dictionary of tensors.
         """
-        raise NotImplementedError("Not implemented yet.")
+
+        # We need the coordinates of this GPU:
+        this_rank = device_mesh.get_local_rank()
+        domain_size = dist.get_world_size(group=device_mesh.get_group())
+
+        group = zarr.open_group(filename, mode="r")
+
+        missing_keys = set(self.keys_to_read) - set(group.keys())
+
+        if len(missing_keys) > 0:
+            raise ValueError(f"Keys {missing_keys} not found in file {filename}")
+
+        data = {}
+        specs = {}
+        for key in self.keys_to_read:
+            # Open the array in zarr without reading it and get info:
+            zarr_array = group[key]
+            array_shape = zarr_array.shape
+            if array_shape == ():
+                # Read scalars from every rank and use replicate sharding
+                raw_data = torch.from_numpy(zarr_array[:])
+                placement = [
+                    Replicate(),
+                ]
+                chunk_sizes = None
+            else:
+                target_dim = 0
+                if array_shape[target_dim] < domain_size:
+                    # If the array is smaller than the number of ranks,
+                    # again read and use replicate sharding:
+                    raw_data = torch.from_numpy(zarr_array[:])
+                    placement = [
+                        Replicate(),
+                    ]
+                    chunk_sizes = None
+                else:
+                    # Read partially from the data and use Shard(target_dim) sharding
+                    chunk_start, chunk_stop, chunk_sizes = self._get_slice_boundaries(
+                        zarr_array.shape, this_rank, domain_size
+                    )
+                    raw_data = torch.from_numpy(zarr_array[chunk_start:chunk_stop])
+                    placement = [
+                        Shard(target_dim),
+                    ]
+
+                    # Turn chunk sizes into a dict over mesh dim 0:
+                    chunk_sizes = {0: chunk_sizes}
+
+            #
+            data[key] = raw_data
+            specs[key] = (placement, chunk_sizes)
+
+        # Patch in the optional keys:
+        data = self.fill_optional_keys(data)
+        for key in data.keys():
+            if key not in specs:
+                specs[key] = (
+                    [
+                        Replicate(),
+                    ],
+                    {},
+                )
+
+        return data, specs
 
 
 if PV_AVAILABLE:
@@ -188,8 +319,12 @@ if PV_AVAILABLE:
         Reader for vtk files.
         """
 
-        def __init__(self, keys_to_read: list[str] | None) -> None:
-            super().__init__(keys_to_read)
+        def __init__(
+            self,
+            keys_to_read: list[str] | None,
+            keys_to_read_if_available: dict[str, torch.Tensor] | None,
+        ) -> None:
+            super().__init__(keys_to_read, keys_to_read_if_available)
 
             self.stl_file_keys = [
                 "stl_coordinates",
@@ -254,7 +389,7 @@ if PV_AVAILABLE:
             if any(key in self.vtu_file_keys for key in self.keys_to_read):
                 raise NotImplementedError("VTU files are not supported yet.")
 
-            return return_data
+            return self.fill_optional_keys(return_data)
 
         def read_file_sharded(
             self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
@@ -309,8 +444,12 @@ if TENSORSTORE_AVAILABLE:
         Reader for tensorstore zarr files.
         """
 
-        def __init__(self, keys_to_read: list[str] | None) -> None:
-            super().__init__(keys_to_read)
+        def __init__(
+            self,
+            keys_to_read: list[str] | None,
+            keys_to_read_if_available: dict[str, torch.Tensor] | None,
+        ) -> None:
+            super().__init__(keys_to_read, keys_to_read_if_available)
 
             self.spec_template = {
                 "driver": "zarr2",
@@ -331,6 +470,8 @@ if TENSORSTORE_AVAILABLE:
             """
             Read a file and return a dictionary of tensors.
             """
+
+            # Trigger an async open of each data item:
             read_futures = {}
             for key in self.keys_to_read:
                 spec = self.spec_template.copy()
@@ -340,24 +481,111 @@ if TENSORSTORE_AVAILABLE:
                     spec, create=False, open=True, context=self.context
                 )
 
-            results = {
-                key: np.array(read_futures[key].result()) for key in self.keys_to_read
+            # Wait for all the opens to conclude:
+            read_futures = {
+                key: read_futures[key].result() for key in read_futures.keys()
             }
 
+            # Trigger an async read of each data item:
+            # (Each item will be a numpy ndarray after this:)
+            read_futures = {
+                key: read_futures[key].read() for key in read_futures.keys()
+            }
+
+            # Convert them to torch tensors:
+            # (make sure to block for the result)
             data = {
-                key: torch.as_tensor(results[key], dtype=torch.float32)
+                key: torch.as_tensor(read_futures[key].result(), dtype=torch.float32)
                 for key in self.keys_to_read
             }
 
-            return data
+            return self.fill_optional_keys(data)
 
         def read_file_sharded(
-            self, filename: pathlib.Path, parallel_rank: int, parallel_size: int
-        ) -> tuple[dict[str, torch.Tensor], dict[str, ShardTensorSpec]]:
+            self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+        ) -> tuple[dict[str, torch.Tensor], dict[str, dict]]:
             """
             Read a file and return a dictionary of tensors.
             """
-            pass
+
+            # We need the coordinates of this GPU:
+            this_rank = device_mesh.get_local_rank()
+            domain_size = dist.get_world_size(group=device_mesh.get_group())
+
+            # This pulls a list of store objects in tensorstore:
+            stores = {}
+            for key in self.keys_to_read:
+                spec = self.spec_template.copy()
+                spec["kvstore"]["path"] = str(filename) + "/" + str(key)
+
+                stores[key] = ts.open(
+                    spec, create=False, open=True, context=self.context
+                )
+
+            stores = {key: stores[key].result() for key in stores.keys()}
+
+            data = {}
+            specs = {}
+            for key in self.keys_to_read:
+                # Open the array in zarr without reading it and get info:
+                store = stores[key]
+                array_shape = store.shape
+                if array_shape == ():
+                    # Read scalars from every rank and use replicate sharding
+                    _slice = np.s_[:]
+                    # raw_data = torch.from_numpy(store[:])
+                    placement = [
+                        Replicate(),
+                    ]
+                    chunk_sizes = None
+                else:
+                    target_dim = 0
+                    if array_shape[target_dim] < domain_size:
+                        # If the array is smaller than the number of ranks,
+                        # again read and use replicate sharding:
+                        _slice = np.s_[:]
+                        # raw_data = torch.from_numpy(store[:])
+                        placement = [
+                            Replicate(),
+                        ]
+                        chunk_sizes = None
+                    else:
+                        # Read partially from the data and use Shard(target_dim) sharding
+                        chunk_start, chunk_stop, chunk_sizes = (
+                            self._get_slice_boundaries(
+                                store.shape, this_rank, domain_size
+                            )
+                        )
+                        _slice = np.s_[chunk_start:chunk_stop]
+                        # raw_data = torch.from_numpy(zarr_array[chunk_start:chunk_stop])
+                        placement = [
+                            Shard(target_dim),
+                        ]
+
+                        # Turn chunk sizes into a dict over mesh dim 0:
+                        chunk_sizes = {0: chunk_sizes}
+
+                # Trigger the reads as async:
+                data[key] = store[_slice].read()
+                specs[key] = (placement, chunk_sizes)
+
+            # Finally, await the full data read:
+            for key in self.keys_to_read:
+                data[key] = torch.as_tensor(data[key].result())
+
+            # Patch in the optional keys:
+            data = self.fill_optional_keys(data)
+            for key in data.keys():
+                if key not in specs:
+                    specs[key] = (
+                        [
+                            Replicate(),
+                        ],
+                        {},
+                    )
+
+            return data, specs
+
 else:
 
     class TensorStoreZarrReader(BackendReader):
@@ -365,7 +593,11 @@ else:
         Null reader for tensorstore zarr files.
         """
 
-        def __init__(self, keys_to_read: list[str] | None) -> None:
+        def __init__(
+            self,
+            keys_to_read: list[str] | None,
+            keys_to_read_if_available: dict[str, torch.Tensor] | None,
+        ) -> None:
             # Raise an exception on construction if we get here:
             raise NotImplementedError(
                 "TensorStoreZarrReader is not available without tensorstore.  `pip install tensorstore`."
@@ -417,6 +649,7 @@ class DrivaerMLDataset:
         self,
         data_dir: str | pathlib.Path,
         keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
         output_device: torch.device,
         preload_depth: int = 2,
         pin_memory: bool = False,
@@ -436,6 +669,8 @@ class DrivaerMLDataset:
             raise NotADirectoryError(f"Data directory {data_dir} is not a directory")
 
         self._keys_to_read = keys_to_read
+        self._keys_to_read_if_available = keys_to_read_if_available
+
         self.file_reader, self._filenames = self._infer_file_type_and_filenames(
             data_dir
         )
@@ -449,24 +684,45 @@ class DrivaerMLDataset:
 
         self.output_device = output_device
         if output_device.type == "cuda":
-            # self._data_loader_stream = torch.cuda.default_stream()
             self._data_loader_stream = torch.cuda.Stream()
         else:
             self._data_loader_stream = None
 
         self.device_mesh = device_mesh
         self.placements = placements
+        # This tracks global tensor info
+        # so we can convert to ShardTensor at the right time.
+        self.shard_spec = {}
+
+        if self.device_mesh is not None:
+            if self.device_mesh.ndim != 1:
+                raise ValueError("Device mesh must be one dimensional")
 
         # This is thread storage for data preloading:
         self._preload_queue = {}
         self._transfer_events = {}
         self.preload_depth = preload_depth
-        self.preload_executor = ThreadPoolExecutor(max_workers=preload_depth)
+        self.preload_executor = ThreadPoolExecutor(max_workers=max(1, preload_depth))
 
         if consumer_stream is None and self.output_device.type == "cuda":
             consumer_stream = torch.cuda.current_stream()
 
         self.consumer_stream = consumer_stream
+
+    def set_indices(self, indices: list[int]):
+        """
+        Set the indices for the dataset for this epoch.
+        """
+
+        # TODO - this needs to block while anything is in the preprocess queue.
+
+        self.indices = indices
+
+    def idx_to_index(self, idx):
+        if hasattr(self, "indices"):
+            return self.indices[idx]
+
+        return idx
 
     def _infer_file_type_and_filenames(
         self, data_dir: pathlib.Path
@@ -485,19 +741,29 @@ class DrivaerMLDataset:
         # But others benefit from having a state, so we use classes:
 
         if all(file.suffix == ".npy" for file in files):
-            file_reader = NpyFileReader(self._keys_to_read)
+            file_reader = NpyFileReader(
+                self._keys_to_read, self._keys_to_read_if_available
+            )
             return file_reader, files
         elif all(file.suffix == ".npz" for file in files):
-            file_reader = NpzFileReader(self._keys_to_read)
+            file_reader = NpzFileReader(
+                self._keys_to_read, self._keys_to_read_if_available
+            )
             return file_reader, files
         elif all(file.suffix == ".zarr" and file.is_dir() for file in files):
             if TENSORSTORE_AVAILABLE:
-                file_reader = TensorStoreZarrReader(self._keys_to_read)
+                file_reader = TensorStoreZarrReader(
+                    self._keys_to_read, self._keys_to_read_if_available
+                )
             else:
-                file_reader = ZarrFileReader(self._keys_to_read)
+                file_reader = ZarrFileReader(
+                    self._keys_to_read, self._keys_to_read_if_available
+                )
             return file_reader, files
         elif all(is_vtk_directory(file) for file in files):
-            file_reader = VTKFileReader(self._keys_to_read)
+            file_reader = VTKFileReader(
+                self._keys_to_read, self._keys_to_read_if_available
+            )
             return file_reader, files
             # Each "file" here is a directory of .vtp, stl, etc.
         else:
@@ -541,7 +807,9 @@ class DrivaerMLDataset:
         return result
 
     def _convert_to_shard_tensors(
-        self, tensors: dict[str, torch.Tensor]
+        self,
+        tensors: dict[str, torch.Tensor],
+        filename: str,
     ) -> dict[str, ShardTensor]:
         """Convert tensors to ShardTensor objects for distributed training.
 
@@ -555,7 +823,19 @@ class DrivaerMLDataset:
         if self.device_mesh is None:
             return tensors
 
-        raise NotImplementedError("Converting to ShardTensor here not implemented yet.")
+        spec_dict = self.shard_spec.pop(filename)
+        result = {}
+        for key in tensors.keys():
+            placement, chunk_sizes = spec_dict[key]
+
+            result[key] = ShardTensor.from_local(
+                local_tensor=tensors[key],
+                device_mesh=self.device_mesh,
+                placements=placement,
+                sharding_shapes=chunk_sizes,
+            )
+
+        return result
 
         # result = {}
 
@@ -628,18 +908,30 @@ class DrivaerMLDataset:
         return result
 
     def __iter__(self):
+        # When starting the iterator method, start loading the data
+        # at idx = 0, idx = 1
+        # Start preprocessing at idx = 0, when the load completes
+
         self.i = 0
+
+        N = len(self.indices) if hasattr(self, "indices") else len(self)
+        for i in range(self.preload_depth):
+            # Trigger the dataset to start loading index 0:
+            if N > i + 1:
+                self.preload(self.idx_to_index(self.i + i))
+
         return self
 
     def __next__(self):
-        if self.i >= len(self._filenames):
+        N = len(self.indices) if hasattr(self, "indices") else len(self._filenames)
+
+        if self.i >= N:
             self.i = 0
             raise StopIteration
 
-        if self.preload_depth > 0 and self.i + 1 < len(self._filenames):
-            self.preload(self.i + 1)
-        if self.preload_depth > 1 and self.i + 2 < len(self._filenames):
-            self.preload(self.i + 2)
+        for i in range(self.preload_depth):
+            if N > i + 1:
+                self.preload(self.i + i)
 
         data = self.__getitem__(self.i)
 
@@ -654,7 +946,14 @@ class DrivaerMLDataset:
         """
         Read a file and return a dictionary of tensors.
         """
-        return self.file_reader.read_file(filename)
+        if self.device_mesh is not None:
+            tensor_dict, spec_dict = self.file_reader.read_file_sharded(
+                filename, self.device_mesh
+            )
+            self.shard_spec[filename] = spec_dict
+            return tensor_dict
+        else:
+            return self.file_reader.read_file(filename)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor | ShardTensor]:
         """
@@ -693,7 +992,7 @@ class DrivaerMLDataset:
 
         # Convert to ShardTensors if using domain parallelism
         if self.device_mesh is not None:
-            data = self._convert_to_shard_tensors(data)
+            data = self._convert_to_shard_tensors(data, self._filenames[idx])
 
         return data
 

@@ -29,7 +29,7 @@ variable names, domain resolution, sampling size etc. are configurable in config
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Optional, Protocol, Sequence, Union
+from typing import Iterable, Literal, Optional, Protocol, Sequence, Union
 
 import numpy as np
 import torch
@@ -299,62 +299,13 @@ class DoMINODataPipe(Dataset):
                 dtype=torch.float32,
             )
 
-        # Always read these keys:
-        self.keys_to_read = ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas"]
-
-        self.keys_to_read_if_available = {
-            "global_params_values": torch.tensor(
-                [[30.0], [1.226]], device=self.preproc_device
-            ),
-            "global_params_reference": torch.tensor(
-                [[30.0], [1.226]], device=self.preproc_device
-            ),
-        }
-
-        self.volume_keys = ["volume_mesh_centers", "volume_fields"]
-        self.surface_keys = [
-            "surface_mesh_centers",
-            "surface_normals",
-            "surface_areas",
-            "surface_fields",
-        ]
-
-        if self.model_type == "volume" or self.model_type == "combined":
-            self.keys_to_read.extend(self.volume_keys)
-        if self.model_type == "surface" or self.model_type == "combined":
-            self.keys_to_read.extend(self.surface_keys)
-
-        if self.config.data_path is not None:
-            self.dataset = DrivaerMLDataset(
-                data_dir=self.config.data_path,
-                keys_to_read=self.keys_to_read,
-                output_device=self.preproc_device,
-                pin_memory=pin_memory,
-                consumer_stream=torch.cuda.default_stream(),
-            )
-        else:
-            self.dataset = None
+        self.dataset = None
 
         # This is thread storage for data preprocessing:
         self._preprocess_queue = {}
         self._preprocess_events = {}
         self.preprocess_depth = 2
         self.preprocess_executor = ThreadPoolExecutor(max_workers=1)
-
-    def set_indices(self, indices: list[int]):
-        """
-        Set the indices for the dataset for this epoch.
-        """
-
-        # TODO - this needs to block while anything is in the preprocess queue.
-
-        self.indices = indices
-
-    def __len__(self):
-        if self.dataset is not None:
-            return len(self.dataset)
-        else:
-            return 0
 
     def compute_stl_scaling(
         self, stl_vertices: torch.Tensor, bounding_box_dims_surf: torch.Tensor | None
@@ -728,10 +679,6 @@ class DoMINODataPipe(Dataset):
 
     @torch.no_grad()
     def process_data(self, data_dict):
-        for key in self.keys_to_read_if_available.keys():
-            if key not in data_dict:
-                data_dict[key] = self.keys_to_read_if_available[key]
-
         # Start building the preprocessed return dict:
         return_dict = {
             "global_params_values": data_dict["global_params_values"],
@@ -839,6 +786,15 @@ class DoMINODataPipe(Dataset):
 
         return volume_fields, surface_fields
 
+    def set_dataset(self, dataset: Iterable) -> None:
+        self.dataset = dataset
+
+    def __len__(self):
+        if self.dataset is not None:
+            return len(self.dataset)
+        else:
+            return 0
+
     def __getitem__(self, idx):
         """
         Function for fetching and processing a single file's data.
@@ -850,17 +806,27 @@ class DoMINODataPipe(Dataset):
         if self.dataset is None:
             raise ValueError("Dataset is not present")
 
-        index = self.idx_to_index(idx)
+        # Get the data from the dataset.
+        # Under the hood, this may be fetching preloaded data.
+        data_dict = self.dataset[idx]
 
-        # Get the preprocessed data:
-        data_dict = self.get_preprocessed(idx)
-        if data_dict is None:
-            # If no preprocessing was done for this index, process it now
+        return self.__call__(data_dict)
 
-            # Get the data from the dataset.
-            # Under the hood, this may be fetching preloaded data.
-            data_dict = self.dataset[index]
-            data_dict = self.process_data(data_dict, idx)
+    def __call__(self, data_dict: dict) -> dict:
+        """
+        Process the incoming data dictionary.
+        - Processes the data
+        - moves it to GPU
+        - adds a batch dimension
+
+        Args:
+            data_dict: Dictionary containing the data to process as torch.Tensors.
+
+        Returns:
+            Dictionary containing the processed data as torch.Tensors.
+
+        """
+        data_dict = self.process_data(data_dict)
 
         # If the data is not on the target device, put it there:
         for key, value in data_dict.items():
@@ -872,101 +838,9 @@ class DoMINODataPipe(Dataset):
 
         return data_dict
 
-    def idx_to_index(self, idx):
-        if hasattr(self, "indices"):
-            return self.indices[idx]
-
-        return idx
-
-    def preprocess(self, idx: int) -> None:
-        """
-        Start preprocessing for the given index (1 step ahead).
-        This processes preloaded data or loads it if not available.
-        """
-        if self.dataset is None:
-            raise ValueError("Dataset is not present")
-
-        if idx in self._preprocess_queue:
-            # Skip items that are already being preprocessed
-            return
-
-        def _preprocess_worker():
-            index = self.idx_to_index(idx)
-            # Try to get preloaded data first
-            data_dict = self.dataset[index]
-            # Process the data
-            return self.process_data(data_dict, idx)
-
-        # Submit preprocessing task to thread pool
-        self._preprocess_queue[idx] = self.preprocess_executor.submit(
-            _preprocess_worker
-        )
-
-    def get_preprocessed(self, idx: int) -> dict | None:
-        """
-        Retrieve preprocessed data (blocking if not ready).
-        Returns None if no preprocessing is in progress for this index.
-        """
-        if idx not in self._preprocess_queue:
-            return None
-
-        result = self._preprocess_queue[idx].result()  # Block until ready
-        self._preprocess_queue.pop(idx)  # Clear after getting result
-
-        return result
-
-    def __next__(self):
-        # To iterate through the data efficiently, he have to implement the
-        # following, assuming a steady state
-
-        # - start the dataset loading at idx + 2
-        # - start the preprocessing pipe at idx + 1
-        #   - the preprocessing pipe has to implicitly wait for idx +1 in the dataset
-        # - wait for the preprocessing pipe at idx to finish
-        # return the data.
-
-        if self.dataset is None:
-            raise ValueError("Dataset is not present")
-
-        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
-
-        if self.i >= N:
-            self.i = 0
-            raise StopIteration
-
-        current_idx = self.i
-
-        # Start loading two ahead:
-
-        if N > current_idx + 2:
-            self.dataset.preload(self.idx_to_index(current_idx + 1))
-            self.dataset.preload(self.idx_to_index(current_idx + 2))
-
-        # If no preprocessing was done for this index, process it now
-        data = self.__getitem__(current_idx)
-
-        self.i += 1
-        return data
-
     def __iter__(self):
-        # When starting the iterator method, start loading the data
-        # at idx = 0, idx = 1
-        # Start preprocessing at idx = 0, when the load completes
-
-        if self.dataset is None:
-            raise ValueError("Dataset is not present")
-
-        self.i = 0
-
-        N = len(self.indices) if hasattr(self, "indices") else len(self.dataset)
-
-        # Trigger the dataset to start loading index 0:
-        if N > 1:
-            self.dataset.preload(self.idx_to_index(self.i))
-        if N > 2:
-            self.dataset.preload(self.idx_to_index(self.i + 1))
-
-        return self
+        for i, batch in enumerate(self.dataset):
+            yield self.__call__(batch)
 
 
 def compute_scaling_factors(
@@ -1151,23 +1025,28 @@ class CachedDoMINODataset(Dataset):
 def create_domino_dataset(
     cfg: DictConfig,
     phase: Literal["train", "val", "test"],
-    volume_variable_names: list[str],
-    surface_variable_names: list[str],
+    keys_to_read: list[str],
+    keys_to_read_if_available: dict[str, torch.Tensor],
     vol_factors: list[float],
     surf_factors: list[float],
     normalize_coordinates: bool = True,
     sample_in_bbox: bool = True,
     sampling: bool = True,
+    device_mesh: torch.distributed.DeviceMesh | None = None,
+    placements: dict[str, torch.distributed.tensor.Placement] | None = None,
 ):
     if phase == "train":
         input_path = cfg.data.input_dir
         model_type = cfg.model.model_type
+        dataloader_cfg = cfg.train.dataloader
     elif phase == "val":
         input_path = cfg.data.input_dir_val
         model_type = cfg.model.model_type
+        dataloader_cfg = cfg.val.dataloader
     elif phase == "test":
         input_path = cfg.eval.test_path
         model_type = "inference"
+        dataloader_cfg = None
     else:
         raise ValueError(f"Invalid phase {phase}")
 
@@ -1183,6 +1062,15 @@ def create_domino_dataset(
             surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
         )
     else:
+        # The dataset path works in two pieces:
+        # There is a core "dataset" which is loading data and moving to GPU
+        # And there is the preprocess step, here.
+
+        # Optionally, and for backwards compatibility, the preprocess
+        # object can accept a dataset which will enable it as an iterator.
+        # The iteration function will loop over the dataset, preprocess the
+        # output, and return it.
+
         overrides = {}
         if hasattr(cfg.data, "gpu_preprocessing"):
             overrides["gpu_preprocessing"] = cfg.data.gpu_preprocessing
@@ -1190,12 +1078,38 @@ def create_domino_dataset(
         if hasattr(cfg.data, "gpu_output"):
             overrides["gpu_output"] = cfg.data.gpu_output
 
-        return DoMINODataPipe(
+        dm = DistributedManager()
+
+        if cfg.data.gpu_preprocessing:
+            device = dm.device
+            consumer_stream = torch.cuda.default_stream()
+        else:
+            device = torch.device("cpu")
+            consumer_stream = None
+
+        if dataloader_cfg is not None:
+            preload_depth = dataloader_cfg.preload_depth
+            pin_memory = dataloader_cfg.pin_memory
+        else:
+            preload_depth = 2
+            pin_memory = False
+
+        dataset = DrivaerMLDataset(
+            data_dir=input_path,
+            keys_to_read=keys_to_read,
+            keys_to_read_if_available=keys_to_read_if_available,
+            output_device=device,
+            preload_depth=preload_depth,
+            pin_memory=pin_memory,
+            device_mesh=device_mesh,
+            placements=placements,
+            consumer_stream=consumer_stream,
+        )
+
+        datapipe = DoMINODataPipe(
             input_path,
             phase=phase,
             grid_resolution=cfg.model.interp_res,
-            volume_variables=volume_variable_names,
-            surface_variables=surface_variable_names,
             normalize_coordinates=normalize_coordinates,
             sampling=sampling,
             sample_in_bbox=sample_in_bbox,
@@ -1215,6 +1129,10 @@ def create_domino_dataset(
             surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
             **overrides,
         )
+
+        datapipe.set_dataset(dataset)
+
+        return datapipe
 
 
 if __name__ == "__main__":
