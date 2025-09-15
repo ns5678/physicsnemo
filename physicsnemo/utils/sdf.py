@@ -195,11 +195,6 @@ def _(
     if mesh_vertices.device != mesh_indices.device:
         raise RuntimeError("mesh_vertices and mesh_indices must be on the same device")
 
-    if mesh_vertices.shape[0] != mesh_indices.shape[0]:
-        raise RuntimeError(
-            "mesh_vertices and mesh_indices must have the same number of points"
-        )
-
     N = input_points.shape[0]
 
     sdf_output = torch.empty(N, 1, device=input_points.device, dtype=input_points.dtype)
