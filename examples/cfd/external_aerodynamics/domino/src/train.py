@@ -70,7 +70,7 @@ from physicsnemo.datapipes.cae.domino_datapipe2 import (
 from physicsnemo.models.domino.model import DoMINO
 from physicsnemo.utils.domino.utils import *
 
-from utils import ScalingFactors
+from utils import ScalingFactors, get_keys_to_read, coordinate_distributed_environment
 
 # This is included for GPU memory tracking:
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
@@ -83,9 +83,6 @@ nvmlInit()
 
 from physicsnemo.utils.profiling import profile, Profiler
 
-
-# Profiler().enable("torch")
-# Profiler().initialize()
 
 from loss import compute_loss_dict
 from utils import get_num_vars
@@ -255,11 +252,15 @@ def train_epoch(
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    ################################
+    ######################################################
     # initialize distributed manager
-    ################################
+    ######################################################
     DistributedManager.initialize()
     dist = DistributedManager()
+
+    # DoMINO supports domain parallel training.  This function helps coordinate
+    # how to set that up, if needed.
+    domain_mesh, data_mesh, placements = coordinate_distributed_environment(cfg)
 
     ################################
     # Initialize NVML
@@ -267,18 +268,18 @@ def main(cfg: DictConfig) -> None:
     nvmlInit()
     gpu_handle = nvmlDeviceGetHandleByIndex(dist.device.index)
 
-    ################################
+    ######################################################
     # Initialize logger
-    ################################
+    ######################################################
 
     logger = PythonLogger("Train")
     logger = RankZeroLoggingWrapper(logger, dist)
 
     logger.info(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
 
-    ################################
-    # Get scaling factors
-    ################################
+    ######################################################
+    # Get scaling factors - precompute them if this fails!
+    ######################################################
     pickle_path = os.path.join(cfg.output) + "/scaling_factors/scaling_factors.pkl"
 
     try:
@@ -289,18 +290,14 @@ def main(cfg: DictConfig) -> None:
             f"Scaling factors not found at: {pickle_path}; please run compute_statistics.py to compute them."
         )
 
+    vol_factors = scaling_factors.mean["volume_fields"]
+    surf_factors = scaling_factors.mean["surface_fields"]
+    vol_factors_tensor = torch.from_numpy(vol_factors).to(dist.device)
+
+    ######################################################
+    # Configure the model
+    ######################################################
     model_type = cfg.model.model_type
-
-    # Get physics imports conditionally
-    add_physics_loss = getattr(cfg.train, "add_physics_loss", False)
-
-    if add_physics_loss:
-        from physicsnemo.sym.eq.pde import PDE
-        from physicsnemo.sym.eq.ls.grads import FirstDeriv
-        from physicsnemo.sym.eq.pdes.navier_stokes import IncompressibleNavierStokes
-    else:
-        PDE = FirstDeriv = IncompressibleNavierStokes = None
-
     num_vol_vars, num_surf_vars, num_global_features = get_num_vars(cfg, model_type)
 
     if model_type == "combined" or model_type == "surface":
@@ -313,10 +310,28 @@ def main(cfg: DictConfig) -> None:
     else:
         volume_variable_names = []
 
-    vol_factors = scaling_factors.mean["volume_fields"]
-    surf_factors = scaling_factors.mean["surface_fields"]
-    vol_factors_tensor = torch.from_numpy(vol_factors).to(dist.device)
+    ######################################################
+    # Configure physics loss
+    # Unless enabled, these are null-ops
+    ######################################################
+    add_physics_loss = getattr(cfg.train, "add_physics_loss", False)
 
+    if add_physics_loss:
+        from physicsnemo.sym.eq.pde import PDE
+        from physicsnemo.sym.eq.ls.grads import FirstDeriv
+        from physicsnemo.sym.eq.pdes.navier_stokes import IncompressibleNavierStokes
+    else:
+        PDE = FirstDeriv = IncompressibleNavierStokes = None
+
+    # Initialize physics components conditionally
+    first_deriv = None
+    eqn = None
+    if add_physics_loss:
+        first_deriv = FirstDeriv(dim=3, direct_input=True)
+        eqn = IncompressibleNavierStokes(rho=1.226, nu="nu", dim=3, time=False)
+        eqn = eqn.make_nodes(return_as_dict=True)
+
+    # The bounding box is used in calculating the physics loss:
     bounding_box = None
     if add_physics_loss:
         bounding_box = cfg.data.bounding_box
@@ -328,37 +343,95 @@ def main(cfg: DictConfig) -> None:
             .to(dist.device)
         )
 
-    train_dataset = create_domino_dataset(
-        cfg,
-        phase="train",
-        volume_variable_names=volume_variable_names,
-        surface_variable_names=surface_variable_names,
-        vol_factors=vol_factors,
-        surf_factors=surf_factors,
-    )
-    val_dataset = create_domino_dataset(
-        cfg,
-        phase="val",
-        volume_variable_names=volume_variable_names,
-        surface_variable_names=surface_variable_names,
-        vol_factors=vol_factors,
-        surf_factors=surf_factors,
+    ######################################################
+    # Configure the dataset
+    ######################################################
+
+    # This helper function is to determine which keys to read from the data
+    # (and which to use default values for, if they aren't present - like
+    # air_density, for example)
+    keys_to_read, keys_to_read_if_available = get_keys_to_read(
+        cfg, model_type, get_ground_truth=True
     )
 
+    # The dataset actually works in two pieces
+    # The core dataset just reads data from disk, and puts it on the GPU if needed.
+    # The data processesing pipeline will preprocess that data and prepare it for the model.
+    # Obviously, you need both, so this function will return the datapipeline in
+    # a way that can be iterated over.
+    #
+    # To properly shuffle the data, we use a distributed sampler too.
+    # It's configured properly for optional domain parallelism, and you have
+    # to make sure to call set_epoch below.
+
+    train_dataloader = create_domino_dataset(
+        cfg,
+        phase="train",
+        keys_to_read=keys_to_read,
+        keys_to_read_if_available=keys_to_read_if_available,
+        vol_factors=vol_factors,
+        surf_factors=surf_factors,
+        device_mesh=domain_mesh,
+        placements=placements,
+    )
     train_sampler = DistributedSampler(
-        train_dataset,
-        num_replicas=dist.world_size,
-        rank=dist.rank,
+        train_dataloader,
+        num_replicas=data_mesh.size(),
+        rank=data_mesh.get_local_rank(),
         **cfg.train.sampler,
     )
 
+    val_dataloader = create_domino_dataset(
+        cfg,
+        phase="val",
+        keys_to_read=keys_to_read,
+        keys_to_read_if_available=keys_to_read_if_available,
+        vol_factors=vol_factors,
+        surf_factors=surf_factors,
+        device_mesh=domain_mesh,
+        placements=placements,
+    )
     val_sampler = DistributedSampler(
-        val_dataset,
-        num_replicas=dist.world_size,
-        rank=dist.rank,
+        val_dataloader,
+        num_replicas=data_mesh.size(),
+        rank=data_mesh.get_local_rank(),
         **cfg.val.sampler,
     )
 
+    # train_dataloader = create_domino_dataset(
+    #     cfg,
+    #     phase="train",
+    #     volume_variable_names=volume_variable_names,
+    #     surface_variable_names=surface_variable_names,
+    #     vol_factors=vol_factors,
+    #     surf_factors=surf_factors,
+    # )
+    # val_dataloader = create_domino_dataset(
+    #     cfg,
+    #     phase="val",
+    #     volume_variable_names=volume_variable_names,
+    #     surface_variable_names=surface_variable_names,
+    #     vol_factors=vol_factors,
+    #     surf_factors=surf_factors,
+    # )
+
+    # train_sampler = DistributedSampler(
+    #     train_dataloader,
+    #     num_replicas=dist.world_size,
+    #     rank=dist.rank,
+    #     **cfg.train.sampler,
+    # )
+
+    # val_sampler = DistributedSampler(
+    #     val_dataloader,
+    #     num_replicas=dist.world_size,
+    #     rank=dist.rank,
+    #     **cfg.val.sampler,
+    # )
+
+    ######################################################
+    # Configure the model
+    ######################################################
     model = DoMINO(
         input_features=3,
         output_features_vol=num_vol_vars,
@@ -382,23 +455,23 @@ def main(cfg: DictConfig) -> None:
             static_graph=True,
         )
 
-    # optimizer = apex.optimizers.FusedAdam(model.parameters(), lr=0.001)
+    ######################################################
+    # Initialize optimzer and gradient scaler
+    ######################################################
+
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         optimizer, milestones=[50, 100, 200, 250, 300, 350, 400, 450], gamma=0.5
     )
 
-    # Initialize physics components conditionally
-    first_deriv = None
-    eqn = None
-    if add_physics_loss:
-        first_deriv = FirstDeriv(dim=3, direct_input=True)
-        eqn = IncompressibleNavierStokes(rho=1.226, nu="nu", dim=3, time=False)
-        eqn = eqn.make_nodes(return_as_dict=True)
-
     # Initialize the scaler for mixed precision
     scaler = GradScaler()
 
+    ######################################################
+    # Initialize output tools
+    ######################################################
+
+    # Tensorboard Writer to track training.
     writer = SummaryWriter(os.path.join(cfg.output, "tensorboard"))
 
     epoch_number = 0
@@ -413,6 +486,10 @@ def main(cfg: DictConfig) -> None:
 
     if dist.world_size > 1:
         torch.distributed.barrier()
+
+    ######################################################
+    # Load checkpoint if available
+    ######################################################
 
     init_epoch = load_checkpoint(
         to_absolute_path(cfg.resume_dir),
@@ -439,6 +516,10 @@ def main(cfg: DictConfig) -> None:
 
     initial_integral_factor_orig = cfg.model.integral_loss_scaling_factor
 
+    ######################################################
+    # Begin Training loop over epochs
+    ######################################################
+
     for epoch in range(init_epoch, cfg.train.epochs):
         start_time = time.perf_counter()
         logger.info(f"Device {dist.device}, epoch {epoch_number}:")
@@ -451,8 +532,8 @@ def main(cfg: DictConfig) -> None:
         # This controls what indices to use for each epoch.
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
-        train_dataset.set_indices(list(train_sampler))
-        val_dataset.set_indices(list(val_sampler))
+        train_dataloader.dataset.set_indices(list(train_sampler))
+        val_dataloader.dataset.set_indices(list(val_sampler))
 
         initial_integral_factor = initial_integral_factor_orig
 
@@ -464,7 +545,7 @@ def main(cfg: DictConfig) -> None:
         model.train(True)
         epoch_start_time = time.perf_counter()
         avg_loss = train_epoch(
-            dataloader=train_dataset,
+            dataloader=train_dataloader,
             model=model,
             optimizer=optimizer,
             scaler=scaler,
@@ -491,7 +572,7 @@ def main(cfg: DictConfig) -> None:
 
         model.eval()
         avg_vloss = validation_step(
-            dataloader=val_dataset,
+            dataloader=val_dataloader,
             model=model,
             device=dist.device,
             logger=logger,

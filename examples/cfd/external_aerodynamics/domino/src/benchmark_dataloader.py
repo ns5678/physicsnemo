@@ -35,11 +35,21 @@ import torchinfo
 
 from typing import Literal, Any
 
-import apex
-import numpy as np
+
 import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
+
+DISABLE_RMM = os.environ.get("DOMINO_DISABLE_RMM", "False")
+if not DISABLE_RMM:
+    import rmm
+    from rmm.allocators.torch import rmm_torch_allocator
+    import torch
+
+    rmm.reinitialize(pool_allocator=True)
+    torch.cuda.memory.change_current_allocator(rmm_torch_allocator)
+
+
 import torch.distributed as dist
 from torch.cuda.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
@@ -66,6 +76,8 @@ from physicsnemo.utils.domino.utils import *
 from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 import time
 
+from utils import ScalingFactors, get_keys_to_read, coordinate_distributed_environment
+
 # Initialize NVML
 nvmlInit()
 
@@ -73,10 +85,8 @@ nvmlInit()
 from physicsnemo.utils.profiling import profile, Profiler
 
 
-@profile
-def train_epoch(
+def benchmark_io_epoch(
     dataloader,
-    sampler,
     logger,
     gpu_handle,
     epoch_index,
@@ -84,8 +94,6 @@ def train_epoch(
 ):
     dist = DistributedManager()
 
-    indices = list(iter(sampler))
-    print(f"indices: {indices}")
     # If you tell the dataloader the indices in advance, it will preload
     # and pre-preprocess data
     # dataloader.set_indices(indices)
@@ -93,11 +101,8 @@ def train_epoch(
     gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
     start_time = time.perf_counter()
     for i_batch, sample_batched in enumerate(dataloader):
-        # sampled_batched = dict_to_device(sample_batched, device)
-        # if i_batch == 7:
-        # break
-        # for key in sampled_batched.keys():
-        #     print(f"{key}: {sampled_batched[key].shape}")
+        # for key in sample_batched.keys():
+        #     print(f"{key}: {sample_batched[key].shape}")
 
         # Gather data and report
         elapsed_time = time.perf_counter() - start_time
@@ -114,80 +119,6 @@ def train_epoch(
         gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
 
     return
-
-
-def get_or_compute_scaling_factors(
-    cfg: DictConfig,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Get or compute scaling factors for volume and surface fields normalization.
-
-    This function either loads pre-computed scaling factors from disk or computes them
-    if they don't exist. The scaling factors are used for normalizing volume and surface
-    fields data based on the specified normalization method in the config.
-
-    Args:
-        cfg (DictConfig): Configuration object containing:
-            - project.name: Project name for saving/loading scaling factors
-            - model.normalization: Type of normalization ("min_max_scaling" or "mean_std_scaling")
-            - data.input_dir: Input directory path
-            - data_processor.use_cache: Whether to use cached data
-
-    Returns:
-        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]: A tuple containing:
-            - vol_factors: Scaling factors for volume fields (max/min or mean/std)
-            - surf_factors: Scaling factors for surface fields (max/min or mean/std)
-            Each factor is a numpy array containing the respective scaling values.
-
-    Raises:
-        ValueError: If an invalid normalization type is specified in the config.
-    """
-    # Compute or load the scaling factors:
-    vol_save_path = os.path.join(
-        "outputs", cfg.project.name, "volume_scaling_factors.npy"
-    )
-    surf_save_path = os.path.join(
-        "outputs", cfg.project.name, "surface_scaling_factors.npy"
-    )
-
-    if not os.path.exists(vol_save_path) or not os.path.exists(surf_save_path):
-        # Save the scaling factors if needed:
-        mean, std, min_val, max_val = compute_scaling_factors(
-            cfg=cfg,
-            input_path=cfg.data.input_dir,
-            use_cache=cfg.data_processor.use_cache,
-        )
-
-        v_mean = mean["volume_fields"].cpu().numpy()
-        v_std = std["volume_fields"].cpu().numpy()
-        v_min = min_val["volume_fields"].cpu().numpy()
-        v_max = max_val["volume_fields"].cpu().numpy()
-
-        s_mean = mean["surface_fields"].cpu().numpy()
-        s_std = std["surface_fields"].cpu().numpy()
-        s_min = min_val["surface_fields"].cpu().numpy()
-        s_max = max_val["surface_fields"].cpu().numpy()
-
-        np.save(vol_save_path, [v_mean, v_std, v_min, v_max])
-        np.save(surf_save_path, [s_mean, s_std, s_min, s_max])
-    else:
-        v_mean, v_std, v_min, v_max = np.load(vol_save_path)
-        s_mean, s_std, s_min, s_max = np.load(surf_save_path)
-
-    if cfg.model.normalization == "min_max_scaling":
-        vol_factors = [v_max, v_min]
-    elif cfg.model.normalization == "mean_std_scaling":
-        vol_factors = [v_mean, v_std]
-    else:
-        raise ValueError(f"Invalid normalization type: {cfg.model.normalization}")
-
-    if cfg.model.normalization == "min_max_scaling":
-        surf_factors = [s_max, s_min]
-    elif cfg.model.normalization == "mean_std_scaling":
-        surf_factors = [s_mean, s_std]
-    else:
-        raise ValueError(f"Invalid normalization type: {cfg.model.normalization}")
-
-    return vol_factors, surf_factors
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
@@ -208,15 +139,38 @@ def main(cfg: DictConfig) -> None:
 
     logger.info(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
 
-    vol_factors, surf_factors = get_or_compute_scaling_factors(cfg)
+    ################################
+    # Get scaling factors
+    ################################
+    pickle_path = os.path.join(cfg.output) + "/scaling_factors/scaling_factors.pkl"
+
+    try:
+        scaling_factors = ScalingFactors.load(pickle_path)
+        logger.info(f"Scaling factors loaded from: {pickle_path}")
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Scaling factors not found at: {pickle_path}; please run compute_statistics.py to compute them."
+        )
+
+    vol_factors = scaling_factors.mean["volume_fields"]
+    surf_factors = scaling_factors.mean["surface_fields"]
+    vol_factors_tensor = torch.from_numpy(vol_factors).to(dist.device)
+
+    keys_to_read, keys_to_read_if_available = get_keys_to_read(
+        cfg, model_type, get_ground_truth=True
+    )
+
+    domain_mesh, data_mesh, placements = coordinate_distributed_environment(cfg)
 
     train_dataset = create_domino_dataset(
         cfg,
         phase="train",
-        volume_variable_names="volume_fields",
-        surface_variable_names="surface_fields",
+        keys_to_read=keys_to_read,
+        keys_to_read_if_available=keys_to_read_if_available,
         vol_factors=vol_factors,
         surf_factors=surf_factors,
+        device_mesh=domain_mesh,
+        placements=placements,
     )
     train_sampler = DistributedSampler(
         train_dataset, num_replicas=dist.world_size, rank=dist.rank
@@ -232,11 +186,14 @@ def main(cfg: DictConfig) -> None:
         start_time = time.perf_counter()
         logger.info(f"Device {dist.device}, epoch {epoch}:")
 
+        train_sampler.set_epoch(epoch)
+        print(f"indices: {list(train_sampler)}")
+        train_dataset.dataset.set_indices(list(train_sampler))
+
         epoch_start_time = time.perf_counter()
         with Profiler():
-            train_epoch(
+            benchmark_io_epoch(
                 dataloader=train_dataset,
-                sampler=train_sampler,
                 logger=logger,
                 gpu_handle=gpu_handle,
                 epoch_index=epoch,

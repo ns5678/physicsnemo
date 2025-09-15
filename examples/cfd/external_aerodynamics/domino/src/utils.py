@@ -21,6 +21,13 @@ import torch
 import pickle
 from pathlib import Path
 from typing import Literal
+from omegaconf import DictConfig
+from physicsnemo.distributed import DistributedManager
+
+from torch.distributed.tensor.placement_types import (
+    Shard,
+    Replicate,
+)
 
 
 def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]):
@@ -80,6 +87,121 @@ def get_num_vars(cfg: dict, model_type: Literal["volume", "surface", "combined"]
             raise ValueError(f"Unknown global parameter type")
 
     return num_vol_vars, num_surf_vars, num_global_features
+
+
+def get_keys_to_read(
+    cfg: dict,
+    model_type: Literal["volume", "surface", "combined"],
+    get_ground_truth: bool = True,
+):
+    """
+    This function helps configure the keys to read from the dataset.
+
+    And, if some global parameter values are provided in the config,
+    they are also read here and passed to the dataset.
+
+    """
+
+    # Always read these keys:
+    keys_to_read = ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas"]
+
+    # If these keys are in the config, use them, else provide defaults in
+    # case they aren't in the dataset:
+    # TODO
+    keys_to_read_if_available = {
+        "global_params_values": torch.tensor([[30.0], [1.226]]),
+        "global_params_reference": torch.tensor([[30.0], [1.226]]),
+    }
+
+    # Volume keys:
+    volume_keys = [
+        "volume_mesh_centers",
+    ]
+    if get_ground_truth:
+        volume_keys.append("volume_fields")
+
+    # Surface keys:
+    surface_keys = [
+        "surface_mesh_centers",
+        "surface_normals",
+        "surface_areas",
+    ]
+    if get_ground_truth:
+        surface_keys.append("surface_fields")
+
+    if model_type == "volume" or model_type == "combined":
+        keys_to_read.extend(volume_keys)
+    if model_type == "surface" or model_type == "combined":
+        keys_to_read.extend(surface_keys)
+
+    return keys_to_read, keys_to_read_if_available
+
+
+def coordinate_distributed_environment(cfg: DictConfig):
+    """
+    Initialize the distributed env for DoMINO.  This is actually always a 2D Mesh:
+    one dimension is the data-parallel dimension (DDP), and the other is the
+    domain dimension.
+
+    For the training scripts, we need to know the rank, size of each dimension,
+    and return the domain_mesh and placements for the loader.
+
+    Args:
+        cfg: Configuration object containing the domain parallelism configuration.
+
+    Returns:
+        domain_mesh: torch.distributed.DeviceMesh: The domain mesh for the domain parallel dimension.
+        data_mesh: torch.distributed.DeviceMesh: The data mesh for the data parallel dimension.
+        placements: dict[str, torch.distributed.tensor.Placement]: The placements for the data set
+    """
+
+    DistributedManager.initialize()
+    dist = DistributedManager()
+
+    # Default to no domain parallelism:
+    domain_size = cfg.get("domain_parallelism", {}).get("domain_size", 1)
+
+    # Initialize the device mesh:
+    mesh = dist.initialize_mesh(
+        mesh_shape=(-1, domain_size), mesh_dim_names=("ddp", "domain")
+    )
+    domain_mesh = mesh["domain"]
+    data_mesh = mesh["ddp"]
+
+    if domain_size > 1:
+        # Define the default placements for each tensor that might show up in
+        # the data.  Note that we'll define placements for all keys, even if
+        # they aren't actually used.
+
+        # Note that placements are defined for pre-batched data, no batch index!
+
+        grid_like_placement = [
+            Shard(0),
+        ]
+        point_like_placement = [
+            Shard(0),
+        ]
+        replicate_placement = [
+            Replicate(),
+        ]
+        placements = {
+            "stl_coordinates": point_like_placement,
+            "stl_centers": point_like_placement,
+            "stl_faces": point_like_placement,
+            "stl_areas": point_like_placement,
+            "surface_fields": point_like_placement,
+            "volume_mesh_centers": point_like_placement,
+            "volume_fields": point_like_placement,
+            "surface_mesh_centers": point_like_placement,
+            "surface_normals": point_like_placement,
+            "surface_areas": point_like_placement,
+            "surface_fields": point_like_placement,
+        }
+    else:
+        domain_mesh = None
+        placements = None
+
+    return domain_mesh, data_mesh, placements
 
 
 @dataclass
