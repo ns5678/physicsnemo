@@ -78,8 +78,8 @@ data:
   input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
   input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/test/
   bounding_box: # Bounding box dimensions for shift wing volume
-    min: [-10.0, -50.0, -10.0]
-    max: [100.0, 50.0, 10.0]
+    min: [-5.0, -40.0, -10.0]
+    max: [90.0, 40.0, 40.0]
   bounding_box_surface: # Bounding box dimensions for shift wing surface
     min: [2.36, -31.78, 2.35]
     max: [65.08, 31.78, 8.65]
@@ -103,13 +103,13 @@ model:
   loss_function: 
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 10000 # Generally inverse of maximum area
-  interp_res: [128, 128, 64] # resolution of latent space 128, 64, 48
+  interp_res: [96, 96, 48] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   positional_encoding: false # calculate positional encoding?
   volume_points_sample: 32768 # Number of points to sample in volume per epoch
   surface_points_sample: 32768 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 300_000 # Number of points to sample on STL per epoch
+  geom_points_sample: 1_000_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
   num_neighbors_volume: 10 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
@@ -162,9 +162,9 @@ model:
     fourier_features: true
     num_modes: 5
   geometry_local: # Hyperparameters for local geometry extraction
-    volume_neighbors_in_radius: [64, 128] # Number of radius points
+    volume_neighbors_in_radius: [64, 128, 256] # Number of radius points
     surface_neighbors_in_radius: [32, 128] # Number of radius points
-    volume_radii: [0.1, 0.25] # Volume radii
+    volume_radii: [0.1, 0.25, 1.0] # Volume radii
     surface_radii: [0.05, 0.25] # Surface radii
     base_layer: 512
   parameter_model:
