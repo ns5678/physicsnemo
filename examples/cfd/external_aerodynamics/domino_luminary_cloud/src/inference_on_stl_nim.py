@@ -40,6 +40,8 @@ from physicsnemo.utils.domino.utils import (
     nd_interpolator,
     get_filenames,
     write_to_vtp,
+    write_to_vtu,
+    get_volume_data,
 )
 from torch.cuda.amp import autocast
 from torch.nn.parallel import DistributedDataParallel
@@ -684,7 +686,8 @@ class dominoInference():
         self.stl_vertices = torch.from_numpy(np.float32(stl_vertices)).to(self.device)
         self.stl_centers = torch.from_numpy(np.float32(stl_centers)).to(self.device)
         self.surface_areas = torch.from_numpy(np.float32(surface_areas)).to(self.device)
-        self.stl_normals = -1.0*torch.from_numpy(np.float32(surface_normals)).to(self.device)
+        # self.stl_normals = -1.0*torch.from_numpy(np.float32(surface_normals)).to(self.device) # LC ShiftWing dataset works with positive normals
+        self.stl_normals = torch.from_numpy(np.float32(surface_normals)).to(self.device)
         self.mesh_indices_flattened = torch.from_numpy(np.int32(mesh_indices_flattened)).to(
                 self.device
             )
@@ -858,7 +861,7 @@ class dominoInference():
         self.out_dict["lift_force"] = lift_force
         
     @torch.inference_mode()
-    def compute_surface_solutions(self, num_sample_points=None, surface_mesh=None, plot_solutions=False, eval_batch_size=128_000):
+    def compute_surface_solutions(self, num_sample_points=None, surface_mesh=None, plot_solutions=False, eval_batch_size=256_000):
         total_time = 0.0
         # start_event = torch.cuda.Event(device=device, enable_timing=True)
         # end_event = torch.cuda.Event(device=device, enable_timing=True)
@@ -909,7 +912,8 @@ class dominoInference():
 
             inner_time = time.time()
             #start_event.record()
-            start_time = time.time()
+            start_time = time.time() 
+
             if num_sample_points == None:
                 point_batch_size = eval_batch_size
                 num_points = surface_coordinates_all.shape[1]
@@ -1363,19 +1367,42 @@ if __name__ == "__main__":
     )
 
     for count, dirname in enumerate(dirnames_per_gpu):
-        filepath = os.path.join(input_path, dirname)
+        print(f"Processing sample {dirname}")
+        dir_path = os.path.join(input_path, dirname)
+
+        stl_filepath = os.path.join(dir_path, "merged_surfaces.stl")
+        vtu_path = os.path.join(dir_path, "merged_volumes.vtu")
 
         STREAM_VELOCITY = 148.25
         AIR_DENSITY = 0.38
         PRESSURE = 23840.0
         STENCIL_SIZE = 7
 
-        domino.set_stl_path(filepath)
+        domino.set_stl_path(stl_filepath)
         domino.set_stream_velocity(STREAM_VELOCITY)
         domino.set_air_density(AIR_DENSITY)
         domino.set_pressure(PRESSURE)
-
         domino.set_stencil_size(STENCIL_SIZE)
+
+        # # Get the unstructured grid data for VTU output
+        reader = vtk.vtkXMLUnstructuredGridReader()
+        reader.SetFileName(vtu_path)
+        reader.Update()
+        polydata = reader.GetOutput()
+        volume_coordinates, volume_fields = get_volume_data(
+            polydata, cfg.variables.volume.solution.keys()
+        )
+        volume_fields = np.concatenate(volume_fields, axis=-1)
+        c_min = cfg.data.bounding_box.min
+        c_max = cfg.data.bounding_box.max
+        ids_in_bbox = np.where(
+            (volume_coordinates[:, 0] < c_min[0])
+            | (volume_coordinates[:, 0] > c_max[0])
+            | (volume_coordinates[:, 1] < c_min[1])
+            | (volume_coordinates[:, 1] > c_max[1])
+            | (volume_coordinates[:, 2] < c_min[2])
+            | (volume_coordinates[:, 2] > c_max[2])
+        )
 
         domino.read_stl()
 
@@ -1385,35 +1412,52 @@ if __name__ == "__main__":
         domino.compute_geo_encoding()
 
         # Calculate volume solutions
+        # For NIM
+        # domino.compute_volume_solutions(
+        #     num_sample_points=10_256_000, plot_solutions=False
+        # )
+        
+        # For validation with predefined test VTU file 
         domino.compute_volume_solutions(
-            num_sample_points=10_256_000, plot_solutions=False
+            num_sample_points=None, point_cloud=volume_coordinates, plot_solutions=False
         )
 
         # Calculate surface solutions
         domino.compute_surface_solutions()
-        domino.compute_forces()
+
+        #domino.compute_forces()
+        
         out_dict = domino.get_out_dict()
         
-        vtp_path = f"/lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtp"
+        vtp_out_path = f"/lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtp"
+        vtu_out_path = f"/lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtu"
         
-        domino.mesh_stl.save(vtp_path)
+        domino.mesh_stl.save(vtp_out_path)
+
         reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(f"{vtp_path}")
+        reader.SetFileName(f"{vtp_out_path}")
         reader.Update()
         polydata_surf = reader.GetOutput()
-
-        surfParam_vtk = numpy_support.numpy_to_vtk(
-            out_dict["pressure_surface"][0].cpu().numpy()
-        )
+        surfParam_vtk = numpy_support.numpy_to_vtk(out_dict["pressure_surface"][0].cpu().numpy())
         surfParam_vtk.SetName(f"Pressure")
         polydata_surf.GetCellData().AddArray(surfParam_vtk)
-
-        surfParam_vtk = numpy_support.numpy_to_vtk(
-            out_dict["wall-shear-stress"][0].cpu().numpy()
-        )
+        surfParam_vtk = numpy_support.numpy_to_vtk(out_dict["wall-shear-stress"][0].cpu().numpy())
         surfParam_vtk.SetName(f"Wall-shear-stress")
         polydata_surf.GetCellData().AddArray(surfParam_vtk)
+        write_to_vtp(polydata_surf, vtp_out_path)
+        print('Write to VTP done for ', dirname)
 
-        write_to_vtp(polydata_surf, vtp_path)
-        print('Write to VTP done for ', filepath)
+        volume_fields_predicted = torch.cat((out_dict["pressure"], out_dict["velocity"]), axis=-1)[0].cpu().numpy()
+        volume_fields_predicted[ids_in_bbox] = 0.0
+        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["pressure"][0].cpu().numpy())
+        volParam_vtk.SetName(f"PressurePred")
+        polydata.GetPointData().AddArray(volParam_vtk)
+        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["velocity"][0].cpu().numpy())
+        volParam_vtk.SetName(f"VelocityPred")
+        polydata.GetPointData().AddArray(volParam_vtk)
+        write_to_vtu(polydata, vtu_out_path)
+        print('Write to VTU done for ', dirname)
+
+
+
     exit()

@@ -266,7 +266,6 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                     pos_encoding = model.position_encoder(
                         pos_encoding, eval_mode="surface"
                     )
-
                     tpredictions_batch = model.calculate_solution_with_neighbors(
                         surface_mesh_centers_batch,
                         geo_encoding_local,
@@ -280,7 +279,6 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                         global_params_reference,
                         num_sample_points=cfg.model.num_neighbors_surface,
                     )
-                    
                     running_tloss_surf += loss_fn(tpredictions_batch, target_batch)
                     prediction_surf[
                         :, start_idx:end_idx
