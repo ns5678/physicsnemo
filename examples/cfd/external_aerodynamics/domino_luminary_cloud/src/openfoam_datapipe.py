@@ -197,10 +197,8 @@ class OpenFoamDataset(Dataset):
             volume_fields = np.concatenate(volume_fields, axis=-1)
 
             # Non-dimensionalize volume fields
-            volume_fields[:, :3] = volume_fields[:, :3] / sample_stream_velocity
-            volume_fields[:, 3:4] = volume_fields[:, 3:4] / (
-               sample_pressure
-            )
+            volume_fields[:, :1] = volume_fields[:, :1] / sample_pressure
+            volume_fields[:, 1:4] = volume_fields[:, 1:4] / sample_stream_velocity
         else:
             volume_fields = None
             volume_coordinates = None
@@ -279,6 +277,7 @@ class OpenFoamDataset(Dataset):
         print('Volume fields min: ', np.min(volume_fields), 'Volume fields max: ', np.max(volume_fields))
         print('global_params_values:', global_params_values)
         print('global_params_reference:', global_params_reference)
+        
         # Add the parameters to the dictionary
         return {
             "stl_coordinates": np.float32(stl_vertices),

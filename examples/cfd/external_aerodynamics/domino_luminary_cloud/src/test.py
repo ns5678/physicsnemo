@@ -93,6 +93,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
         global_params_reference = data_dict["global_params_reference"]
         stream_velocity = global_params_reference[:, 0, :]
         air_density = global_params_reference[:, 1, :]
+        pressure = global_params_reference[:, 2, :]
 
         # STL nodes
         geo_centers = data_dict["geometry_coordinates"]
@@ -202,18 +203,11 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
 
             prediction_vol = unnormalize(prediction_vol, vol_factors[0], vol_factors[1])
 
-            prediction_vol[:, :, :3] = (
-                prediction_vol[:, :, :3] * stream_velocity[0, 0].cpu().numpy()
+            prediction_vol[:, :, :1] = (
+                prediction_vol[:, :, :1] * pressure[0, 0].cpu().numpy()
             )
-            prediction_vol[:, :, 3] = (
-                prediction_vol[:, :, 3]
-                * stream_velocity[0, 0].cpu().numpy() ** 2.0
-                * air_density[0, 0].cpu().numpy()
-            )
-            prediction_vol[:, :, 4] = (
-                prediction_vol[:, :, 4]
-                * stream_velocity[0, 0].cpu().numpy()
-                * length_scale[0].cpu().numpy()
+            prediction_vol[:, :, 1:] = (
+                prediction_vol[:, :, 1:] * stream_velocity[0, 0].cpu().numpy()
             )
         else:
             prediction_vol = None
@@ -294,8 +288,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
 
             prediction_surf = (
                 unnormalize(prediction_surf, surf_factors[0], surf_factors[1])
-                * stream_velocity[0, 0].cpu().numpy() ** 2.0
-                * air_density[0, 0].cpu().numpy()
+                * pressure[0, 0].cpu().numpy()
             )
 
         else:
@@ -412,9 +405,9 @@ def main(cfg: DictConfig):
     for count, dirname in enumerate(dirnames_per_gpu):
         filepath = os.path.join(input_path, dirname)
         tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
-        stl_path = os.path.join(filepath, f"drivaer_{tag}.stl")
-        vtp_path = os.path.join(filepath, f"boundary_{tag}.vtp")
-        vtu_path = os.path.join(filepath, f"volume_{tag}.vtu")
+        stl_path = os.path.join(filepath, f"merged_surfaces.stl")
+        vtp_path = os.path.join(filepath, f"merged_surfaces.vtp")
+        vtu_path = os.path.join(filepath, f"merged_volumes.vtu")
 
         vtp_pred_save_path = os.path.join(
             pred_save_path, f"boundary_{tag}_predicted.vtp"
@@ -477,6 +470,7 @@ def main(cfg: DictConfig):
         }
         stream_velocity = global_params_reference["inlet_velocity"][0]
         air_density = global_params_reference["air_density"]
+        pressure = global_params_reference["pressure"]
 
         # Arrange global parameters reference in a list, ensuring it is flat
         global_params_reference_list = []
@@ -503,6 +497,8 @@ def main(cfg: DictConfig):
                 global_params_values_list.append(stream_velocity)
             elif key == "air_density":
                 global_params_values_list.append(air_density)
+            elif key == "pressure":
+                global_params_values_list.append(pressure)
             else:
                 raise ValueError(
                     f"Global parameter {key} not supported for  this dataset"
@@ -749,56 +745,56 @@ def main(cfg: DictConfig):
         if prediction_surf is not None:
             surface_sizes = np.expand_dims(surface_sizes, -1)
 
-            pres_x_pred = np.sum(
-                prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            )
-            shear_x_pred = np.sum(prediction_surf[0, :, 1] * surface_sizes[:, 0])
+            # pres_x_pred = np.sum(
+            #     prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
+            # )
+            # shear_x_pred = np.sum(prediction_surf[0, :, 1] * surface_sizes[:, 0])
 
-            pres_x_true = np.sum(
-                surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            )
-            shear_x_true = np.sum(surface_fields[:, 1] * surface_sizes[:, 0])
+            # pres_x_true = np.sum(
+            #     surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
+            # )
+            # shear_x_true = np.sum(surface_fields[:, 1] * surface_sizes[:, 0])
 
-            force_x_pred = np.sum(
-                prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-                - prediction_surf[0, :, 1] * surface_sizes[:, 0]
-            )
-            force_x_true = np.sum(
-                surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-                - surface_fields[:, 1] * surface_sizes[:, 0]
-            )
+            # force_x_pred = np.sum(
+            #     prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
+            #     - prediction_surf[0, :, 1] * surface_sizes[:, 0]
+            # )
+            # force_x_true = np.sum(
+            #     surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
+            #     - surface_fields[:, 1] * surface_sizes[:, 0]
+            # )
 
-            force_y_pred = np.sum(
-                prediction_surf[0, :, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
-                - prediction_surf[0, :, 2] * surface_sizes[:, 0]
-            )
-            force_y_true = np.sum(
-                surface_fields[:, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
-                - surface_fields[:, 2] * surface_sizes[:, 0]
-            )
+            # force_y_pred = np.sum(
+            #     prediction_surf[0, :, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
+            #     - prediction_surf[0, :, 2] * surface_sizes[:, 0]
+            # )
+            # force_y_true = np.sum(
+            #     surface_fields[:, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
+            #     - surface_fields[:, 2] * surface_sizes[:, 0]
+            # )
 
-            force_z_pred = np.sum(
-                prediction_surf[0, :, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
-                - prediction_surf[0, :, 3] * surface_sizes[:, 0]
-            )
-            force_z_true = np.sum(
-                surface_fields[:, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
-                - surface_fields[:, 3] * surface_sizes[:, 0]
-            )
-            print("Drag=", dirname, force_x_pred, force_x_true)
-            print("Lift=", dirname, force_z_pred, force_z_true)
-            print("Side=", dirname, force_y_pred, force_y_true)
-            aero_forces_all.append(
-                [
-                    dirname,
-                    force_x_pred,
-                    force_x_true,
-                    force_z_pred,
-                    force_z_true,
-                    force_y_pred,
-                    force_y_true,
-                ]
-            )
+            # force_z_pred = np.sum(
+            #     prediction_surf[0, :, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
+            #     - prediction_surf[0, :, 3] * surface_sizes[:, 0]
+            # )
+            # force_z_true = np.sum(
+            #     surface_fields[:, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
+            #     - surface_fields[:, 3] * surface_sizes[:, 0]
+            # )
+            # print("Drag=", dirname, force_x_pred, force_x_true)
+            # print("Lift=", dirname, force_z_pred, force_z_true)
+            # print("Side=", dirname, force_y_pred, force_y_true)
+            # aero_forces_all.append(
+            #     [
+            #         dirname,
+            #         force_x_pred,
+            #         force_x_true,
+            #         force_z_pred,
+            #         force_z_true,
+            #         force_y_pred,
+            #         force_y_true,
+            #     ]
+            # )
 
             l2_gt = np.mean(np.square(surface_fields), (0))
             l2_error = np.mean(np.square(prediction_surf[0] - surface_fields), (0))
@@ -848,16 +844,12 @@ def main(cfg: DictConfig):
 
         if prediction_vol is not None:
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:3])
+            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1])
             volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
             polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 3:4])
+            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:4])
             volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
-
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 4:5])
-            volParam_vtk.SetName(f"{volume_variable_names[2]}Pred")
             polydata_vol.GetPointData().AddArray(volParam_vtk)
 
             write_to_vtu(polydata_vol, vtu_pred_save_path)

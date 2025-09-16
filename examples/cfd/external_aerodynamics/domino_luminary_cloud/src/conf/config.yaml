@@ -19,7 +19,7 @@
 # └───────────────────────────────────────────┘  
 # Project name
 project:
-  name: LC_Dataset_No_Integral_Loss
+  name: LC_Dataset_No_Integral_Loss_1_3
   
 exp_tag: 2 # Experiment tag
 # Main output directory.
@@ -42,7 +42,7 @@ resume_dir: ${output}/models
 data_processor:
   kind: lc_data # must be either drivesim or drivaer_aws
   output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
-  input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples_train/
+  input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 8
@@ -103,11 +103,11 @@ model:
   loss_function: 
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 10000 # Generally inverse of maximum area
-  interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
+  interp_res: [128, 128, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   positional_encoding: false # calculate positional encoding?
-  volume_points_sample: 8192 # Number of points to sample in volume per epoch
-  surface_points_sample: 8192 # Number of points to sample on surface per epoch
+  volume_points_sample: 32768 # Number of points to sample in volume per epoch
+  surface_points_sample: 32768 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
   geom_points_sample: 300_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
@@ -128,7 +128,7 @@ model:
     points: 1_000_000 # number of points
   geometry_rep: # Hyperparameters for geometry representation network
     geo_conv:
-      base_neurons: 32 # 256 or 64
+      base_neurons: 64 # 256 or 64
       base_neurons_in: 1
       base_neurons_out: 1
       volume_radii: [0.1, 0.5, 1.0, 2.5] # radii for volume
@@ -169,8 +169,8 @@ model:
     base_layer: 512
   parameter_model:
     base_layer: 512
-    fourier_features: false
-    num_modes: 5
+    fourier_features: true
+    num_modes: 8
     activation: ${model.activation}
 
 # ┌───────────────────────────────────────────┐
@@ -207,9 +207,9 @@ val:
 # └───────────────────────────────────────────┘  
 # Testing configurable parameters
 eval:
-  test_path: /user/testing_data # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /user/predicted_data # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.455.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /user/scaling_params
+  test_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inference-nim/ # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.499.pt # Name of checkpoint to select from saved checkpoints
+  scaling_param_path: /lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1_3/
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
