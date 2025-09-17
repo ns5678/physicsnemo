@@ -42,7 +42,7 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 import torch
 
-DISABLE_RMM = os.environ.get("DISABLE_RMM", "False")
+DISABLE_RMM = os.environ.get("DISABLE_RMM", False)
 if not DISABLE_RMM:
     import rmm
     from rmm.allocators.torch import rmm_torch_allocator

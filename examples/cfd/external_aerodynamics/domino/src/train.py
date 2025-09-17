@@ -39,7 +39,7 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 
-DISABLE_RMM = os.environ.get("DOMINO_DISABLE_RMM", "False")
+DISABLE_RMM = os.environ.get("DOMINO_DISABLE_RMM", False)
 if not DISABLE_RMM:
     import rmm
     from rmm.allocators.torch import rmm_torch_allocator
