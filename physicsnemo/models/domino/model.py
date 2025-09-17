@@ -1884,9 +1884,6 @@ class DoMINO(nn.Module):
         # Bounding box grid
         s_grid = data_dict["surf_grid"]
         sdf_surf_grid = data_dict["sdf_surf_grid"]
-        # Scaling factors
-        surf_max = data_dict["surface_min_max"][:, 1]
-        surf_min = data_dict["surface_min_max"][:, 0]
 
         # Parameters
         global_params_values = data_dict["global_params_values"]
@@ -1897,12 +1894,17 @@ class DoMINO(nn.Module):
             # Computational domain grid
             p_grid = data_dict["grid"]
             sdf_grid = data_dict["sdf_grid"]
-            # Scaling factors
-            vol_max = data_dict["volume_min_max"][:, 1]
-            vol_min = data_dict["volume_min_max"][:, 0]
+            if "volume_min_max" in data_dict.keys():
+                # Scaling factors
+                vol_max = data_dict["volume_min_max"][:, 1]
+                vol_min = data_dict["volume_min_max"][:, 0]
 
-            # Normalize based on computational domain
-            geo_centers_vol = 2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
+                # Normalize based on computational domain
+                geo_centers_vol = (
+                    2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
+                )
+            else:
+                geo_centers_vol = geo_centers
 
             encoding_g_vol = self.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
 
@@ -1926,9 +1928,16 @@ class DoMINO(nn.Module):
 
         if self.output_features_surf is not None:
             # Represent geometry on bounding box
-            geo_centers_surf = (
-                2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
-            )
+            if "surface_min_max" in data_dict.keys():
+                # Scaling factors
+                surf_max = data_dict["surface_min_max"][:, 1]
+                surf_min = data_dict["surface_min_max"][:, 0]
+                geo_centers_surf = (
+                    2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
+                )
+            else:
+                geo_centers_surf = geo_centers
+
             encoding_g_surf = self.geo_rep_surface(
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
