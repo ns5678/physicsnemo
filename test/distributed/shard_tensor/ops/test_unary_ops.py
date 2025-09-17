@@ -14,6 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Test unary operations on ShardTensor.  This file tests torch.unsqueeze with
+both regular dimensions as well as negative dimensions.
+
+The input tensors are not significant in any way, we just need them to be
+ShardTensors.
+"""
+
 import sys
 
 sys.path.append("../")
@@ -32,7 +40,8 @@ except ImportError:
     )
 
 import torch
-from test_shard_tensor_redistribute import shard_tensor_factory
+
+from ..test_redistribute import shard_tensor_factory
 
 
 @pytest.mark.multigpu_static

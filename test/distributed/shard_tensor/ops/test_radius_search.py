@@ -14,6 +14,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+This file tests the `radius_search` function from physicsnemo when
+applied on sharded tensors.
+
+This has a departure from the usual structure of tests.  The radius_search
+function does not guarantee any ordering of it's output points nor which
+points will be returned, if there are more points inside a radius than requested.
+
+Here, we are manually checking the points agree with two tweaks: first, the
+number of input points requested is always more than the number of points
+available.  Second, the points are sorted before making a comparison.
+"""
+
 import pytest
 import torch
 
@@ -139,9 +152,9 @@ def test_sharded_radius_search_layer_forward(
         num_neigh = npoints
     else:
         num_neigh = nx * ny * nz
-    geom_centers = torch.randn(bsize, npoints, 3).to(device)
-    surf_grid = torch.randn(bsize, nx, ny, nz, 3).to(device)
-    surf_grid_max_min = torch.randn(bsize, 2, 3).to(device)
+    geom_centers = torch.randn(bsize, npoints, 3, device=device)
+    surf_grid = torch.randn(bsize, nx, ny, nz, 3, device=device)
+    surf_grid_max_min = torch.randn(bsize, 2, 3, device=device)
     input_dict = {
         "geometry_coordinates": geom_centers,
         "surf_grid": surf_grid,

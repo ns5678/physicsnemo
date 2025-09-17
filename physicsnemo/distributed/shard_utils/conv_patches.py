@@ -24,7 +24,6 @@ from physicsnemo.utils.version_check import check_module_requirements
 
 check_module_requirements("physicsnemo.distributed.shard_tensor")
 
-
 from torch.distributed.tensor import DTensor  # noqa: E402
 from torch.distributed.tensor.placement_types import (  # noqa: E402
     Shard,
@@ -464,7 +463,6 @@ class PartialConvND(torch.autograd.Function):
         Returns:
             Tuple containing gradients for inputs, weights, and bias (plus None values for other args)
         """
-        spec = ctx.spec
         conv_kwargs = ctx.conv_kwargs
         local_chunk, weight, bias = ctx.saved_tensors
 
@@ -490,11 +488,13 @@ class PartialConvND(torch.autograd.Function):
             **conv_kwargs,
         )
 
-        # Synchronize weight and bias gradients across all ranks
-        group = spec.mesh.get_group()
-        dist.all_reduce(grad_weight, group=group)
-        if grad_bias is not None:
-            dist.all_reduce(grad_bias, group=group)
+        # Now, loop over the mesh dims and make sure we sync gradients
+        for mesh_dim in range(ctx.spec.mesh.ndim):
+            if ctx.spec.placements[mesh_dim].is_shard():
+                group = ctx.spec.mesh.get_group(mesh_dim)
+                dist.all_reduce(grad_weight, group=group)
+                if grad_bias is not None:
+                    dist.all_reduce(grad_bias, group=group)
 
         return grad_input, grad_weight, grad_bias, None, None
 
