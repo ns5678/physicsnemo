@@ -1320,6 +1320,11 @@ class dominoInference():
 
         if self.world_size == 1:
             pos_encoding = model.position_encoder(pos_encoding, eval_mode="volume")
+            print("volume_mesh_centers ", volume_mesh_centers.max(), volume_mesh_centers.min())
+            print("geo_encoding_local ", geo_encoding_local.max(), geo_encoding_local.min())
+            print("pos_encoding ", pos_encoding.max(), pos_encoding.min())
+            print("global_params_values ", global_params_values.max(), global_params_values.min())
+            print("global_params_reference ", global_params_reference.max(), global_params_reference.min())
             tpredictions_batch = model.calculate_solution(
                 volume_mesh_centers,
                 geo_encoding_local,
@@ -1363,8 +1368,7 @@ if __name__ == "__main__":
 
     domino = dominoInference(cfg, dist, False)
     domino.initialize_model(
-        model_path="/lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1_3/2/models/DoMINO.0.499.pt"
-    )
+        model_path="/lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1/2/models/DoMINO.0.739.pt")
 
     for count, dirname in enumerate(dirnames_per_gpu):
         print(f"Processing sample {dirname}")
@@ -1449,15 +1453,13 @@ if __name__ == "__main__":
 
         volume_fields_predicted = torch.cat((out_dict["pressure"], out_dict["velocity"]), axis=-1)[0].cpu().numpy()
         volume_fields_predicted[ids_in_bbox] = 0.0
-        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["pressure"][0].cpu().numpy())
+        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 0:1])
         volParam_vtk.SetName(f"PressurePred")
         polydata.GetPointData().AddArray(volParam_vtk)
-        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["velocity"][0].cpu().numpy())
+        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 1:])
         volParam_vtk.SetName(f"VelocityPred")
         polydata.GetPointData().AddArray(volParam_vtk)
         write_to_vtu(polydata, vtu_out_path)
         print('Write to VTU done for ', dirname)
-
-
 
     exit()

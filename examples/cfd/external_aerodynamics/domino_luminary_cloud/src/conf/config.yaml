@@ -1,55 +1,16 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 - 2024 NVIDIA CORPORATION & AFFILIATES.
-# SPDX-FileCopyrightText: All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# ┌───────────────────────────────────────────┐
-# │            Project Details                │
-# └───────────────────────────────────────────┘  
-# Project name
 project:
-  name: LC_Dataset_No_Integral_Loss_1_3
-  
-exp_tag: 2 # Experiment tag
-# Main output directory.
+  name: LC_Dataset_No_Integral_Loss_Full_Data
+exp_tag: 1
 project_dir: outputs/${project.name}/
 output: outputs/${project.name}/${exp_tag}
-
-# Hydra config
-hydra:
-  run:
-    dir: ${output}
-  output_subdir: hydra  # Default is .hydra which causes files not being uploaded in W&B.
-
-# The directory to search for checkpoints to continue training.
 resume_dir: ${output}/models
-
-# ┌───────────────────────────────────────────┐
-# │            Data Preprocessing             │
-# └───────────────────────────────────────────┘  
-# Data processor configurable parameters
 data_processor:
-  kind: lc_data # must be either drivesim or drivaer_aws
+  kind: lc_data
   output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
   input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 8
-
-# ┌───────────────────────────────────────────┐
-# │            Solution variables             │
-# └───────────────────────────────────────────┘  
 variables:
   surface:
     solution:
@@ -62,154 +23,165 @@ variables:
   global_parameters:
     inlet_velocity:
       type: vector
-      reference: [148.25] # vector [30, 0, 0] should be specified as [30], while [30, 30, 0] should be [30, 30].
+      reference:
+      - 148.25
     air_density:
       type: scalar
       reference: 0.38
     pressure:
       type: scalar
-      reference: 23840.0  
-
-# ┌───────────────────────────────────────────┐
-# │          Training Data Configs            │
-# └───────────────────────────────────────────┘  
-# Input directory for training and validation data
+      reference: 23840.0
 data:
   input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
   input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/test/
-  bounding_box: # Bounding box dimensions for shift wing volume
-    min: [-5.0, -40.0, -10.0]
-    max: [90.0, 40.0, 40.0]
-  bounding_box_surface: # Bounding box dimensions for shift wing surface
-    min: [2.36, -31.78, 2.35]
-    max: [65.08, 31.78, 8.65]
+  bounding_box:
+    min:
+    - -5.0
+    - -40.0
+    - -10.0
+    max:
+    - 90.0
+    - 40.0
+    - 40.0
+  bounding_box_surface:
+    min:
+    - 2.36
+    - -31.78
+    - 2.35
+    max:
+    - 65.08
+    - 31.78
+    - 8.65
   gpu_preprocessing: true
   gpu_output: true
-
-# ┌───────────────────────────────────────────┐
-# │          Domain Parallelism Settings      │
-# └───────────────────────────────────────────┘  
 domain_parallelism:
   domain_size: 1
   shard_grid: false
   shard_points: false
-
-# ┌───────────────────────────────────────────┐
-# │          Model Parameters                 │
-# └───────────────────────────────────────────┘  
 model:
-  model_type: combined # train which model? surface, volume, combined
-  activation: "relu" # "relu" or "gelu"
-  loss_function: 
-    loss_type: "mse" # mse or rmse
-    area_weighing_factor: 10000 # Generally inverse of maximum area
-  interp_res: [96, 96, 48] # resolution of latent space 128, 64, 48
-  use_sdf_in_basis_func: true # SDF in basis function network
-  positional_encoding: false # calculate positional encoding?
-  volume_points_sample: 32768 # Number of points to sample in volume per epoch
-  surface_points_sample: 32768 # Number of points to sample on surface per epoch
-  surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 1_000_000 # Number of points to sample on STL per epoch
-  num_neighbors_surface: 7 # How many neighbors on surface?
-  num_neighbors_volume: 10 # How many neighbors on volume?
-  combine_volume_surface: false # combine volume and surface encodings
-  return_volume_neighbors: true # Whether to return volume neighbors or not
-  use_surface_normals: true # Use surface normals and surface areas for surface computation?
-  use_surface_area: true # Use only surface normals and not surface area
-  integral_loss_scaling_factor: 100 # Scale integral loss by this factor
-  normalization: min_max_scaling # or mean_std_scaling
-  encode_parameters: true # encode inlet velocity and air density in the model
-  surf_loss_scaling: 5.0 # scale surface loss with this factor in combined mode
-  vol_loss_scaling: 1.0 # scale volume loss with this factor in combined mode
-  geometry_encoding_type: both # geometry encoder type, sdf, stl, both
-  solution_calculation_mode: two-loop # one-loop is better for sharded, two-loop is lower memory but more overhead. Physics losses are not supported via one-loop presently.
-  resampling_surface_mesh: # resampling of surface mesh before constructing kd tree
-    resample: false #false or true
-    points: 1_000_000 # number of points
-  geometry_rep: # Hyperparameters for geometry representation network
+  model_type: combined
+  activation: relu
+  loss_function:
+    loss_type: mse
+    area_weighing_factor: 10000
+  interp_res:
+  - 128
+  - 128
+  - 64
+  use_sdf_in_basis_func: true
+  positional_encoding: false
+  volume_points_sample: 65536
+  surface_points_sample: 65536
+  surface_sampling_algorithm: random
+  geom_points_sample: 1000000
+  num_neighbors_surface: 7
+  num_neighbors_volume: 10
+  combine_volume_surface: false
+  return_volume_neighbors: true
+  use_surface_normals: true
+  use_surface_area: true
+  integral_loss_scaling_factor: 100
+  normalization: min_max_scaling
+  encode_parameters: true
+  surf_loss_scaling: 1.0
+  vol_loss_scaling: 1.0
+  geometry_encoding_type: both
+  solution_calculation_mode: two-loop
+  resampling_surface_mesh:
+    resample: false
+    points: 1000000
+  geometry_rep:
     geo_conv:
-      base_neurons: 64 # 256 or 64
+      base_neurons: 64
       base_neurons_in: 1
       base_neurons_out: 1
-      volume_radii: [0.1, 0.5, 1.0, 2.5] # radii for volume
-      surface_radii: [0.01, 0.05, 1.0] # radii for surface
-      surface_hops: 1 # Number of surface iterations
-      volume_hops: 1 # Number of volume iterations
-      volume_neighbors_in_radius: [10, 10, 10, 10] # Number of neighbors in radius for volume
-      surface_neighbors_in_radius: [10, 10, 10] # Number of neighbors in radius for surface
+      volume_radii:
+      - 0.1
+      - 0.5
+      - 1.0
+      - 2.5
+      surface_radii:
+      - 0.01
+      - 0.05
+      - 1.0
+      surface_hops: 1
+      volume_hops: 1
+      volume_neighbors_in_radius:
+      - 10
+      - 10
+      - 10
+      - 10
+      surface_neighbors_in_radius:
+      - 10
+      - 10
+      - 10
       fourier_features: false
       num_modes: 5
       activation: ${model.activation}
     geo_processor:
       base_filters: 8
       activation: ${model.activation}
-      processor_type: conv # conv or unet (conv is better; fno, fignet to be added)
-      self_attention: false # can be used only with unet
-      cross_attention: false # can be used only with unet
-  nn_basis_functions: # Hyperparameters for basis function network
+      processor_type: conv
+      self_attention: false
+      cross_attention: false
+  nn_basis_functions:
     base_layer: 512
     fourier_features: true
     num_modes: 5
     activation: ${model.activation}
   local_point_conv:
     activation: ${model.activation}
-  aggregation_model: # Hyperparameters for aggregation network
+  aggregation_model:
     base_layer: 512
     activation: ${model.activation}
-  position_encoder: # Hyperparameters for position encoding network
+  position_encoder:
     base_neurons: 512
     activation: ${model.activation}
     fourier_features: true
     num_modes: 5
-  geometry_local: # Hyperparameters for local geometry extraction
-    volume_neighbors_in_radius: [64, 128, 256] # Number of radius points
-    surface_neighbors_in_radius: [32, 128] # Number of radius points
-    volume_radii: [0.1, 0.25, 1.0] # Volume radii
-    surface_radii: [0.05, 0.25] # Surface radii
+  geometry_local:
+    volume_neighbors_in_radius:
+    - 64
+    - 128
+    - 256
+    surface_neighbors_in_radius:
+    - 32
+    - 128
+    volume_radii:
+    - 0.1
+    - 0.25
+    - 1.0
+    surface_radii:
+    - 0.05
+    - 0.25
     base_layer: 512
   parameter_model:
     base_layer: 512
     fourier_features: true
     num_modes: 8
     activation: ${model.activation}
-
-# ┌───────────────────────────────────────────┐
-# │          Training Configs                 │
-# └───────────────────────────────────────────┘  
-# Training configurable parameters
 train:
-  epochs: 500
-  checkpoint_interval: 1
+  epochs: 1000
+  checkpoint_interval: 20
   dataloader:
     batch_size: 1
-    pin_memory: false # if the preprocessing is outputing GPU data, set this to false
+    pin_memory: false
   sampler:
     shuffle: true
     drop_last: false
-  checkpoint_dir: /user/models/ # Use only for retraining
+  checkpoint_dir: /user/models/
   add_physics_loss: false
-
-
-# ┌───────────────────────────────────────────┐
-# │          Validation Configs               │
-# └───────────────────────────────────────────┘  
-# Validation configurable parameters
 val:
   dataloader:
     batch_size: 1
-    pin_memory: false # if the preprocessing is outputing GPU data, set this to false
+    pin_memory: false
   sampler:
     shuffle: true
     drop_last: false
-
-# ┌───────────────────────────────────────────┐
-# │          Testing data Configs             │
-# └───────────────────────────────────────────┘  
-# Testing configurable parameters
 eval:
-  test_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inference-nim/ # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.499.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1_3/
-  refine_stl: False # Automatically refine STL during inference
-  stencil_size: 7 # Stencil size for evaluating surface and volume model
+  test_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inference-nim/
+  save_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/
+  checkpoint_name: DoMINO.0.659.pt
+  scaling_param_path: /lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/
+  refine_stl: false
+  stencil_size: 7

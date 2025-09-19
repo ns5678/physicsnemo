@@ -187,6 +187,11 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                     pos_encoding = model.position_encoder(
                         pos_encoding, eval_mode="volume"
                     )
+                    print("volume_mesh_centers_batch ", volume_mesh_centers_batch.max(), volume_mesh_centers_batch.min())
+                    print("geo_encoding_local ", geo_encoding_local.max(), geo_encoding_local.min())
+                    print("pos_encoding ", pos_encoding.max(), pos_encoding.min())
+                    print("global_params_values ", global_params_values.max(), global_params_values.min())
+                    print("global_params_reference ", global_params_reference.max(), global_params_reference.min())
                     tpredictions_batch = model.calculate_solution(
                         volume_mesh_centers_batch,
                         geo_encoding_local,
