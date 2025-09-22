@@ -16,13 +16,12 @@
 # ruff: noqa: E402
 
 
-import pytest
-import torch
+import numpy as np
 from pytest_utils import import_or_fail
 
 
 def tet_verts(flip_x=1):
-    tet = torch.tensor(
+    tet = np.array(
         [
             flip_x * 0,
             0,
@@ -61,47 +60,35 @@ def tet_verts(flip_x=1):
             0,
             1,
         ],
-        dtype=torch.float64,
+        dtype=np.float64,
     )
 
     return tet
 
 
 @import_or_fail("warp")
-@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_sdf(pytestconfig, dtype, device):
+def test_sdf(pytestconfig):
     from physicsnemo.utils.sdf import signed_distance_field
 
-    mesh_vertices = tet_verts().reshape(-1, 3)
+    tet = tet_verts()
 
-    if device == "cuda":
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    mesh_indices = torch.tensor(
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], dtype=torch.int32
+    sdf_tet = signed_distance_field(
+        tet,
+        np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+        np.array([1, 1, 1, 0.1, 0.1, 0.1], dtype=np.float64),
     )
-    input_points = torch.tensor([[1, 1, 1], [0.05, 0.1, 0.1]], dtype=torch.float64)
+    np.testing.assert_allclose(sdf_tet, [1.15470052, -0.1], atol=1e-7)
 
-    mesh_vertices = mesh_vertices.to(dtype)
-    input_points = input_points.to(dtype)
-
-    sdf_tet, sdf_hit_point = signed_distance_field(
-        mesh_vertices,
-        mesh_indices,
-        input_points,
-        use_sign_winding_number=False,
+    sdf_tet, sdf_hit_point, sdf_hit_point_id = signed_distance_field(
+        tet,
+        np.array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], dtype=np.int32),
+        np.array([1, 1, 1, 0.12, 0.11, 0.1], dtype=np.float64),
+        include_hit_points=True,
+        include_hit_points_id=True,
     )
-
-    expected_sdf = torch.tensor([[1.1547], [-0.05]], dtype=dtype)
-    assert torch.allclose(sdf_tet, expected_sdf, atol=1e-7)
-
-    assert torch.allclose(
+    np.testing.assert_allclose(
         sdf_hit_point,
-        torch.tensor(
-            [[0.33333322, 0.33333334, 0.3333334], [0.0, 0.10, 0.10]], dtype=dtype
-        ),
+        [[0.33333322, 0.33333334, 0.3333334], [0.12000002, 0.11, 0.0]],
         atol=1e-7,
     )
+    np.testing.assert_allclose(sdf_hit_point_id, [3, 0], atol=1e-7)
