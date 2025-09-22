@@ -155,8 +155,9 @@ class BQWarp(nn.Module):
                 - outputs: Tensor containing coordinates of the neighboring points
         """
         batch_size = x.shape[0]
+        nx, ny, nz = self.grid_resolution
 
-        p_grid = p_grid.reshape(batch_size, -1, 3)
+        p_grid = torch.reshape(p_grid, (batch_size, nx * ny * nz, 3))
 
         if reverse_mapping:
             mapping, outputs = radius_search(
@@ -591,23 +592,15 @@ class GeometryRep(nn.Module):
         if self.geo_encoding_type == "both" or self.geo_encoding_type == "stl":
             # Calculate multi-scale geoemtry dependency
             x_encoding = []
-
             for j in range(len(self.radii)):
-                with torch.autograd.profiler.record_function(f"bq_warp_{j}"):
-                    mapping, k_short = self.bq_warp[j](x, p_grid)
-                    x_encoding_inter = self.geo_conv_out[j](k_short, p_grid)
-                    # Propagate information in the geometry enclosed BBox
-                    for _i in range(self.hops):
-                        with torch.autograd.profiler.record_function(
-                            f"geo_processor_{j}_{_i}"
-                        ):
-                            dx = self.geo_processors[j](x_encoding_inter) / self.hops
-                            x_encoding_inter = x_encoding_inter + dx
-                    x_encoding_inter = self.geo_processor_out[j](x_encoding_inter)
-
-                    x_encoding.append(x_encoding_inter)
-
-            # current_stream.
+                mapping, k_short = self.bq_warp[j](x, p_grid)
+                x_encoding_inter = self.geo_conv_out[j](k_short, p_grid)
+                # Propagate information in the geometry enclosed BBox
+                for _ in range(self.hops):
+                    dx = self.geo_processors[j](x_encoding_inter) / self.hops
+                    x_encoding_inter = x_encoding_inter + dx
+                x_encoding_inter = self.geo_processor_out[j](x_encoding_inter)
+                x_encoding.append(x_encoding_inter)
             x_encoding = torch.cat(x_encoding, dim=1)
 
         if self.geo_encoding_type == "both" or self.geo_encoding_type == "sdf":
@@ -1666,7 +1659,6 @@ class DoMINO(nn.Module):
         return_volume_neighbors=False,
     ):
         """Function to approximate solution sampling the neighborhood information"""
-
         if eval_mode == "volume":
             num_variables = self.num_variables_vol
             nn_basis = self.nn_basis_vol
@@ -1884,6 +1876,9 @@ class DoMINO(nn.Module):
         # Bounding box grid
         s_grid = data_dict["surf_grid"]
         sdf_surf_grid = data_dict["sdf_surf_grid"]
+        # Scaling factors
+        surf_max = data_dict["surface_min_max"][:, 1]
+        surf_min = data_dict["surface_min_max"][:, 0]
 
         # Parameters
         global_params_values = data_dict["global_params_values"]
@@ -1894,17 +1889,12 @@ class DoMINO(nn.Module):
             # Computational domain grid
             p_grid = data_dict["grid"]
             sdf_grid = data_dict["sdf_grid"]
-            if "volume_min_max" in data_dict.keys():
-                # Scaling factors
-                vol_max = data_dict["volume_min_max"][:, 1]
-                vol_min = data_dict["volume_min_max"][:, 0]
+            # Scaling factors
+            vol_max = data_dict["volume_min_max"][:, 1]
+            vol_min = data_dict["volume_min_max"][:, 0]
 
-                # Normalize based on computational domain
-                geo_centers_vol = (
-                    2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
-                )
-            else:
-                geo_centers_vol = geo_centers
+            # Normalize based on computational domain
+            geo_centers_vol = 2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
 
             encoding_g_vol = self.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
 
@@ -1928,16 +1918,9 @@ class DoMINO(nn.Module):
 
         if self.output_features_surf is not None:
             # Represent geometry on bounding box
-            if "surface_min_max" in data_dict.keys():
-                # Scaling factors
-                surf_max = data_dict["surface_min_max"][:, 1]
-                surf_min = data_dict["surface_min_max"][:, 0]
-                geo_centers_surf = (
-                    2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
-                )
-            else:
-                geo_centers_surf = geo_centers
-
+            geo_centers_surf = (
+                2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
+            )
             encoding_g_surf = self.geo_rep_surface(
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
