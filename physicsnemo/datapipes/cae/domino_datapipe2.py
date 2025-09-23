@@ -494,7 +494,8 @@ class DoMINODataPipe(Dataset):
                 )
 
             # Select out the sampled points for non-neighbor arrays:
-            surface_fields = surface_fields[idx_surface]
+            if surface_fields is not None:
+                surface_fields = surface_fields[idx_surface]
             pos_normals_com_surface = pos_normals_com_surface[idx_surface]
             # Subsample the normals and sizes:
             surface_normals = surface_normals[idx_surface]
@@ -606,12 +607,10 @@ class DoMINODataPipe(Dataset):
         if self.config.sampling:
             # Generate a series of idx to sample the volume
             # without replacement
-
             volume_coordinates_sampled, idx_volume = shuffle_array(
                 volume_coordinates, self.config.volume_points_sample
             )
             volume_coordinates_sampled = volume_coordinates[idx_volume]
-
             # In case too few points are in the sampled data (because the
             # inputs were too few), pad the outputs:
             if volume_coordinates_sampled.shape[0] < self.config.volume_points_sample:
@@ -619,6 +618,7 @@ class DoMINODataPipe(Dataset):
                     self.config.volume_points_sample
                     - volume_coordinates_sampled.shape[0]
                 )
+
                 volume_coordinates_sampled = torch.nn.functional.pad(
                     volume_coordinates_sampled,
                     (0, 0, 0, 0, 0, padding_size),
@@ -1122,17 +1122,15 @@ def create_domino_dataset(
     device_mesh: torch.distributed.DeviceMesh | None = None,
     placements: dict[str, torch.distributed.tensor.Placement] | None = None,
 ):
+    model_type = cfg.model.model_type
     if phase == "train":
         input_path = cfg.data.input_dir
-        model_type = cfg.model.model_type
         dataloader_cfg = cfg.train.dataloader
     elif phase == "val":
         input_path = cfg.data.input_dir_val
-        model_type = cfg.model.model_type
         dataloader_cfg = cfg.val.dataloader
     elif phase == "test":
         input_path = cfg.eval.test_path
-        model_type = "inference"
         dataloader_cfg = None
     else:
         raise ValueError(f"Invalid phase {phase}")
