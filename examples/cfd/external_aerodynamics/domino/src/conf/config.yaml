@@ -81,6 +81,9 @@ data: # Input directory for training and validation data
     max: [4.5, 1.2, 1.3]
   gpu_preprocessing: true
   gpu_output: true
+  normalize_coordinates: true
+  sample_in_bbox: true
+  sampling: true
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │
@@ -177,7 +180,8 @@ train: # Training configurable parameters
   checkpoint_interval: 1
   dataloader:
     batch_size: 1
-    pin_memory: false # if the preprocessing is outputing GPU data, set this to false
+    preload_depth: 2
+    pin_memory: True # if the preprocessing is outputing GPU data, set this to false
   sampler:
     shuffle: true
     drop_last: false
@@ -191,7 +195,8 @@ train: # Training configurable parameters
 val: # Validation configurable parameters
   dataloader:
     batch_size: 1
-    pin_memory: false # if the preprocessing is outputing GPU data, set this to false
+    preload_depth: 1
+    pin_memory: true # if the preprocessing is outputing GPU data, set this to false
   sampler:
     shuffle: true
     drop_last: false
@@ -205,4 +210,6 @@ eval: # Testing configurable parameters
   checkpoint_name: DoMINO.0.455.pt # Name of checkpoint to select from saved checkpoints
   scaling_param_path: /user/scaling_params
   refine_stl: False # Automatically refine STL during inference
-  stencil_size: 7 # Stencil size for evaluating surface and volume model
+  #TODO -  This was hardcoded anyways, remove it.
+  # stencil_size: 7 # Stencil size for evaluating surface and volume model
+  num_points: 1_240_000 # Number of points to sample on surface and volume per batch

@@ -173,7 +173,7 @@ def main(cfg: DictConfig) -> None:
         placements=placements,
     )
     train_sampler = DistributedSampler(
-        train_dataset, num_replicas=dist.world_size, rank=dist.rank
+        train_dataset, num_replicas=data_mesh.size(), rank=data_mesh.get_local_rank()
     )
 
     # train_dataloader = DataLoader(

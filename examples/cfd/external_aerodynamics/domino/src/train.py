@@ -39,7 +39,19 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 
-DISABLE_RMM = os.environ.get("DOMINO_DISABLE_RMM", False)
+def srt2bool(val: str):
+    if isinstance(val, bool):
+        return val
+    if val.lower() in ["true", "1", "yes", "y"]:
+        return True
+    elif val.lower() in ["false", "0", "no", "n"]:
+        return False
+    else:
+        raise ValueError(f"Invalid boolean value: {val}")
+
+
+DISABLE_RMM = srt2bool(os.environ.get("DOMINO_DISABLE_RMM", False))
+
 if not DISABLE_RMM:
     import rmm
     from rmm.allocators.torch import rmm_torch_allocator
@@ -170,9 +182,9 @@ def train_epoch(
     gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
     start_time = time.perf_counter()
     with Profiler():
-        for i_batch, sample_batched in enumerate(dataloader):
-            sampled_batched = dict_to_device(sample_batched, device)
-
+        for i_batch, sampled_batched in enumerate(dataloader):
+            if i_batch == 7:
+                break
             if add_physics_loss:
                 autocast_enabled = False
             else:
@@ -373,6 +385,9 @@ def main(cfg: DictConfig) -> None:
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
+        normalize_coordinates=cfg.data.normalize_coordinates,
+        sample_in_bbox=cfg.data.sample_in_bbox,
+        sampling=cfg.data.sampling,
     )
     train_sampler = DistributedSampler(
         train_dataloader,
@@ -390,6 +405,9 @@ def main(cfg: DictConfig) -> None:
         surf_factors=surf_factors,
         device_mesh=domain_mesh,
         placements=placements,
+        normalize_coordinates=cfg.data.normalize_coordinates,
+        sample_in_bbox=cfg.data.sample_in_bbox,
+        sampling=cfg.data.sampling,
     )
     val_sampler = DistributedSampler(
         val_dataloader,
@@ -397,37 +415,6 @@ def main(cfg: DictConfig) -> None:
         rank=data_mesh.get_local_rank(),
         **cfg.val.sampler,
     )
-
-    # train_dataloader = create_domino_dataset(
-    #     cfg,
-    #     phase="train",
-    #     volume_variable_names=volume_variable_names,
-    #     surface_variable_names=surface_variable_names,
-    #     vol_factors=vol_factors,
-    #     surf_factors=surf_factors,
-    # )
-    # val_dataloader = create_domino_dataset(
-    #     cfg,
-    #     phase="val",
-    #     volume_variable_names=volume_variable_names,
-    #     surface_variable_names=surface_variable_names,
-    #     vol_factors=vol_factors,
-    #     surf_factors=surf_factors,
-    # )
-
-    # train_sampler = DistributedSampler(
-    #     train_dataloader,
-    #     num_replicas=dist.world_size,
-    #     rank=dist.rank,
-    #     **cfg.train.sampler,
-    # )
-
-    # val_sampler = DistributedSampler(
-    #     val_dataloader,
-    #     num_replicas=dist.world_size,
-    #     rank=dist.rank,
-    #     **cfg.val.sampler,
-    # )
 
     ######################################################
     # Configure the model
@@ -439,7 +426,6 @@ def main(cfg: DictConfig) -> None:
         global_features=num_global_features,
         model_parameters=cfg.model,
     ).to(dist.device)
-    # model = torch.compile(model, fullgraph=True, dynamic=True)  # TODO make this configurable
 
     # Print model summary (structure and parmeter count).
     logger.info(f"Model summary:\n{torchinfo.summary(model, verbose=0, depth=2)}\n")
@@ -569,6 +555,8 @@ def main(cfg: DictConfig) -> None:
             f"Device {dist.device}, Epoch {epoch_number} took {epoch_end_time - epoch_start_time:.3f} seconds"
         )
         epoch_end_time = time.perf_counter()
+
+        return
 
         model.eval()
         avg_vloss = validation_step(
