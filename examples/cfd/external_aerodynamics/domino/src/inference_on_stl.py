@@ -339,7 +339,7 @@ def inference_on_single_stl(
         inference_dict["surface_areas"] = stl_areas
         inference_dict["surface_faces"] = stl_faces
 
-        if datapipe.model_type == "combined":
+        if datapipe.model_type == "combined" or datapipe.model_type == "volume":
             c_min = datapipe.config.bounding_box_dims[1]
             c_max = datapipe.config.bounding_box_dims[0]
             inference_dict["volume_mesh_centers"] = sample_volume_points(
@@ -438,7 +438,9 @@ def inference_epoch(
         logger.info(
             f"Batch {i_batch} GPU processing time: {procesing_time_end - procesing_time_start:.3f} seconds"
         )
-        logger.info(f"Batch {i_batch} stl points: {stl_center_results.shape[1]}")
+        logger.info(
+            f"Batch {i_batch} stl points: {stl_center_results.shape[1] if stl_center_results is not None else 0}"
+        )
 
         output_start_time = time.perf_counter()
         ######################################################

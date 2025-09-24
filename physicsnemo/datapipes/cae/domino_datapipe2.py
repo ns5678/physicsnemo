@@ -526,10 +526,6 @@ class DoMINODataPipe(Dataset):
             surf_grid = normalize(surf_grid, s_max, s_min)
             surface_coordinates = normalize(surface_coordinates, s_max, s_min)
             surface_neighbors = normalize(surface_neighbors, s_max, s_min)
-            # This is for the SDF Later:
-            normed_vertices = normalize(stl_vertices, s_max, s_min)
-        else:
-            normed_vertices = stl_vertices
 
         ########################################################################
         # Apply scaling to the targets, if desired:
@@ -538,15 +534,6 @@ class DoMINODataPipe(Dataset):
             surface_fields = self.scale_model_targets(
                 surface_fields, self.config.surface_factors
             )
-
-        # Compute signed distance function for the surface grid:
-        sdf_surf_grid, _ = signed_distance_field(
-            mesh_vertices=normed_vertices,
-            mesh_indices=stl_indices,
-            input_points=surf_grid,
-            use_sign_winding_number=True,
-        )
-        return_dict["sdf_surf_grid"] = sdf_surf_grid
 
         return_dict.update(
             {
@@ -746,10 +733,28 @@ class DoMINODataPipe(Dataset):
         )
         return_dict["surf_grid"] = surf_grid
 
+        # We always need to calculate the SDF on the surface grid:
+        # This is for the SDF Later:
+        if self.config.normalize_coordinates:
+            normed_vertices = normalize(data_dict["stl_coordinates"], s_max, s_min)
+        else:
+            normed_vertices = data_dict["stl_coordinates"]
+
+        # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
+        mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
+
+        # Compute signed distance function for the surface grid:
+        sdf_surf_grid, _ = signed_distance_field(
+            mesh_vertices=normed_vertices,
+            mesh_indices=mesh_indices_flattened,
+            input_points=surf_grid,
+            use_sign_winding_number=True,
+        )
+        return_dict["sdf_surf_grid"] = sdf_surf_grid
+
         # Store this only if normalization is active:
-        if self.model_type == "surface" or self.model_type == "combined":
-            if self.config.normalize_coordinates:
-                return_dict["surface_min_max"] = torch.stack([s_min, s_max])
+        if self.config.normalize_coordinates:
+            return_dict["surface_min_max"] = torch.stack([s_min, s_max])
 
         # This is a center of mass computation for the stl surface,
         # using the size of each mesh point as weight.
@@ -773,9 +778,6 @@ class DoMINODataPipe(Dataset):
         if self.model_type == "volume" or self.model_type == "combined":
             if self.config.normalize_coordinates:
                 return_dict["volume_min_max"] = torch.stack([c_min, c_max])
-
-        # For SDF calculations, make sure the mesh_indices_flattened is an integer array:
-        mesh_indices_flattened = data_dict["stl_faces"].to(torch.int32)
 
         if self.model_type == "volume" or self.model_type == "combined":
             volume_fields_raw = (
