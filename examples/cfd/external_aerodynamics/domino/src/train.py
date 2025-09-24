@@ -182,9 +182,9 @@ def train_epoch(
     gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
     start_time = time.perf_counter()
     with Profiler():
+        io_start_time = time.perf_counter()
         for i_batch, sampled_batched in enumerate(dataloader):
-            if i_batch == 7:
-                break
+            io_end_time = time.perf_counter()
             if add_physics_loss:
                 autocast_enabled = False
             else:
@@ -224,6 +224,7 @@ def train_epoch(
             # Gather data and report
             running_loss += loss.item()
             elapsed_time = time.perf_counter() - start_time
+            io_time = io_end_time - io_start_time
             start_time = time.perf_counter()
             gpu_end_info = nvmlDeviceGetMemoryInfo(gpu_handle)
             gpu_memory_used = gpu_end_info.used / (1024**3)
@@ -245,11 +246,11 @@ def train_epoch(
             )
 
             logging_string += loss_string
-            logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb\n"
-            logging_string += f"  GPU memory delta: {gpu_memory_delta:.3f} Gb\n"
-            logging_string += f"  Time taken: {elapsed_time:.2f} seconds\n"
+            logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb (delta: {gpu_memory_delta:.3f})\n"
+            logging_string += f"  Timings: (IO: {io_time:.2f}, Model: {elapsed_time - io_time:.2f}, Total: {elapsed_time:.2f})s\n"
             logger.info(logging_string)
             gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
+            io_start_time = time.perf_counter()
 
     last_loss = running_loss / (i_batch + 1)  # loss per batch
     if dist.rank == 0:
