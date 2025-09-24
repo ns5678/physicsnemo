@@ -68,7 +68,7 @@ variables:
       reference: 1.226
 
 # ┌───────────────────────────────────────────┐
-# │          Training Data Configs            │
+# │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
   input_dir: /user/data/aws_data_all/
@@ -84,6 +84,7 @@ data: # Input directory for training and validation data
   normalize_coordinates: true
   sample_in_bbox: true
   sampling: true
+  scaling_factors: outputs/AWS_Dataset/1/scaling_factors/scaling_factors.pkl
 
 # ┌───────────────────────────────────────────┐
 # │          Domain Parallelism Settings      │

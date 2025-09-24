@@ -292,7 +292,7 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     # Get scaling factors - precompute them if this fails!
     ######################################################
-    pickle_path = os.path.join(cfg.output) + "/scaling_factors/scaling_factors.pkl"
+    pickle_path = os.path.join(cfg.data.scaling_factors)
 
     try:
         scaling_factors = ScalingFactors.load(pickle_path)

@@ -92,7 +92,10 @@ from physicsnemo.utils.profiling import profile, Profiler
 from loss import compute_loss_dict
 from utils import get_num_vars
 
-def reject_interior_volume_points(preprocessed_data: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+
+def reject_interior_volume_points(
+    preprocessed_data: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
     """
     Reject volume points that are inside the STL mesh.
     """
@@ -106,15 +109,27 @@ def reject_interior_volume_points(preprocessed_data: dict[str, torch.Tensor]) ->
     # So remove it if it's there:
     valid_volume_idx = valid_volume_idx.squeeze(-1)
     # Apply this selection to all the volume points:
-    for key in ["volume_mesh_centers", "sdf_nodes", "pos_volume_closest", "pos_volume_center_of_mass"]:
+    for key in [
+        "volume_mesh_centers",
+        "sdf_nodes",
+        "pos_volume_closest",
+        "pos_volume_center_of_mass",
+    ]:
         preprocessed_data[key] = preprocessed_data[key][valid_volume_idx]
-        
+
     return preprocessed_data
 
-def sample_volume_points(c_min: torch.Tensor, c_max: torch.Tensor, n_points: int, device: torch.device, eps: float = 1e-7) -> torch.Tensor:
+
+def sample_volume_points(
+    c_min: torch.Tensor,
+    c_max: torch.Tensor,
+    n_points: int,
+    device: torch.device,
+    eps: float = 1e-7,
+) -> torch.Tensor:
     """
     Generate a set of random points interior to the specified bounding box.
-    
+
     Args:
         c_min: The minimum coordinate of the bounding box.
         c_max: The maximum coordinate of the bounding box.
@@ -124,9 +139,13 @@ def sample_volume_points(c_min: torch.Tensor, c_max: torch.Tensor, n_points: int
     """
     # We use a small edge factor to shift away from the lower bound,
     # which can, in some cases, be exactly on the border.
-    uniform_points = torch.rand(n_points, 3, device=device, dtype=torch.float32)*(1-2*eps) + eps
+    uniform_points = (
+        torch.rand(n_points, 3, device=device, dtype=torch.float32) * (1 - 2 * eps)
+        + eps
+    )
     sampled_volume_points = (c_max - c_min) * uniform_points + c_min
     return sampled_volume_points
+
 
 def inference_on_single_stl(
     stl_coordinates: torch.Tensor,
@@ -241,9 +260,11 @@ def inference_on_single_stl(
             c_min = datapipe.config.bounding_box_dims[1]
             c_max = datapipe.config.bounding_box_dims[0]
             inference_dict["volume_mesh_centers"] = sample_volume_points(
-                c_min, c_max, batch_size, device,
+                c_min,
+                c_max,
+                batch_size,
+                device,
             )
-
 
         ######################################################
         # Pre-process the data with the datapipe:
@@ -305,7 +326,6 @@ def inference_on_single_stl(
     # of the above logic.
     ######################################################
     if datapipe.model_type == "surface" or datapipe.model_type == "combined":
-
         inference_dict = {
             "stl_coordinates": stl_coordinates,
             "stl_faces": stl_faces,
@@ -323,7 +343,10 @@ def inference_on_single_stl(
             c_min = datapipe.config.bounding_box_dims[1]
             c_max = datapipe.config.bounding_box_dims[0]
             inference_dict["volume_mesh_centers"] = sample_volume_points(
-                c_min, c_max, stl_centers.shape[0], device,
+                c_min,
+                c_max,
+                stl_centers.shape[0],
+                device,
             )
 
         # Preprocess:
@@ -332,7 +355,7 @@ def inference_on_single_stl(
         # Pull out the invalid volume points again, if needed:
         if datapipe.model_type == "combined" or datapipe.model_type == "volume":
             preprocessed_data = reject_interior_volume_points(preprocessed_data)
-            
+
         # Run the model forward:
         with torch.no_grad():
             preprocessed_data = {
@@ -374,15 +397,12 @@ def inference_epoch(
     ######################################################
 
     batch_start_time = time.perf_counter()
-    
+
     # N.B. - iterating over the dataset directly here.
     # That's because we need to sample on the STL and volume and
     # that means we'll preprocess after that.
     for i_batch, sample_batched in enumerate(dataloader.dataset):
-        
-        
         dataloading_time = time.perf_counter() - batch_start_time
-
 
         logger.info(
             f"Batch {i_batch} data loading time: {dataloading_time:.3f} seconds"
@@ -418,10 +438,7 @@ def inference_epoch(
         logger.info(
             f"Batch {i_batch} GPU processing time: {procesing_time_end - procesing_time_start:.3f} seconds"
         )
-        logger.info(
-            f"Batch {i_batch} stl points: {stl_center_results.shape[1]}"
-        )
-
+        logger.info(f"Batch {i_batch} stl points: {stl_center_results.shape[1]}")
 
         output_start_time = time.perf_counter()
         ######################################################
@@ -437,7 +454,7 @@ def inference_epoch(
         logger.info(
             f"Batch {i_batch} output time: {output_end_time - output_start_time:.3f} seconds"
         )
-        
+
         batch_start_time = time.perf_counter()
 
 
@@ -448,7 +465,7 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     DistributedManager.initialize()
     dist = DistributedManager()
-    
+
     # DoMINO supports domain parallel training and inference.  This function helps coordinate
     # how to set that up, if needed.
     domain_mesh, data_mesh, placements = coordinate_distributed_environment(cfg)
@@ -463,7 +480,7 @@ def main(cfg: DictConfig) -> None:
     # Initialize logger
     ######################################################
 
-    logger = PythonLogger("Train")
+    logger = PythonLogger("Inference")
     logger = RankZeroLoggingWrapper(logger, dist)
 
     logger.info(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
@@ -472,7 +489,7 @@ def main(cfg: DictConfig) -> None:
     # Get scaling factors
     # Likely, you want to reuse the scaling factors from training.
     ######################################################
-    pickle_path = os.path.join(cfg.output) + "/scaling_factors/scaling_factors.pkl"
+    pickle_path = os.path.join(cfg.data.scaling_factors)
 
     try:
         scaling_factors = ScalingFactors.load(pickle_path)
@@ -536,7 +553,7 @@ def main(cfg: DictConfig) -> None:
     # We are applying preprocessing in a separate step
     # for this - so the dataset and datapipe are separate
     ######################################################
-    
+
     # This helper function is to determine which keys to read from the data
     # (and which to use default values for, if they aren't present - like
     # air_density, for example)
@@ -574,7 +591,7 @@ def main(cfg: DictConfig) -> None:
 
     if hasattr(cfg.data, "gpu_output"):
         overrides["gpu_output"] = cfg.data.gpu_output
-        
+
     test_dataloader = create_domino_dataset(
         cfg,
         phase="test",
@@ -582,13 +599,13 @@ def main(cfg: DictConfig) -> None:
         keys_to_read_if_available=keys_to_read_if_available,
         vol_factors=vol_factors,
         surf_factors=surf_factors,
-        normalize_coordinates = cfg.data.normalize_coordinates,
-        sample_in_bbox = cfg.data.sample_in_bbox,
-        sampling = cfg.data.sampling,
+        normalize_coordinates=cfg.data.normalize_coordinates,
+        sample_in_bbox=cfg.data.sample_in_bbox,
+        sampling=cfg.data.sampling,
         device_mesh=domain_mesh,
         placements=placements,
     )
-    
+
     ######################################################
     # The sampler is used in multi-gpu inference to
     # coordinate the batches used for each rank.
@@ -599,9 +616,6 @@ def main(cfg: DictConfig) -> None:
         rank=data_mesh.get_local_rank(),
         **cfg.train.sampler,
     )
-
-
-
 
     ######################################################
     # Configure the model

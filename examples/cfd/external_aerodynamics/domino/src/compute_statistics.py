@@ -67,7 +67,7 @@ def main(cfg: DictConfig) -> None:
     ################################
     # Create output directory
     ################################
-    output_dir = os.path.join(cfg.output, "scaling_factors")
+    output_dir = os.path.dirname(cfg.data.scaling_factors)
     os.makedirs(output_dir, exist_ok=True)
 
     if dist.world_size > 1:

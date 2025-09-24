@@ -880,6 +880,8 @@ class DrivaerMLDataset:
 
         def _preload_worker():
             data = self._read_file(self._filenames[idx])
+            if "stl_faces" in data:
+                data["stl_faces"] = data["stl_faces"].to(torch.int32)
             # Convert to torch tensors
             return self._move_to_gpu(data, idx)
 
