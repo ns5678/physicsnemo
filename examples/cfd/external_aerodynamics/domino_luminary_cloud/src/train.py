@@ -706,7 +706,7 @@ def main(cfg: DictConfig) -> None:
     # optimizer = apex.optimizers.FusedAdam(model.parameters(), lr=0.001)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[50, 100, 200, 250, 300, 350, 400, 450], gamma=0.5
+        optimizer, milestones=[100, 200, 300, 400, 500, 600, 700, 800, 900, 1000], gamma=0.5
     )
 
     # Initialize physics components conditionally

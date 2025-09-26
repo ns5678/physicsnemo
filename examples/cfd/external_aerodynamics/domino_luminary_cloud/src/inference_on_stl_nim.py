@@ -999,7 +999,7 @@ class dominoInference():
         self.sampling_indices = sampling_indices
 
     @torch.inference_mode()
-    def compute_volume_solutions(self, num_sample_points=None, point_cloud=None, plot_solutions=False, eval_batch_size=128_000):
+    def compute_volume_solutions(self, num_sample_points=None, point_cloud=None, plot_solutions=False, eval_batch_size=256_000):
         if (num_sample_points is None and point_cloud is None) or (num_sample_points is not None and point_cloud is not None):
             raise ValueError(f"Please provide either number of sampling points or a point cloud")
 
@@ -1188,16 +1188,26 @@ class dominoInference():
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
 
-        if self.world_size == 1:
-            encoding_g_surf1 = model.geo_rep_surface1(geo_centers_surf, s_grid, sdf_surf_grid)
-        else:
-            encoding_g_surf1 = model.module.geo_rep_surface1(
-                geo_centers_surf, s_grid, sdf_surf_grid
-            )
+        # encoding_g = torch.cat((encoding_g_vol, encoding_g_surf), axis=1)
 
-        geo_encoding = 0.5 * encoding_g_surf1 + 0.5 * encoding_g_vol
-        geo_encoding_surface = 0.5 * encoding_g_surf
-        return geo_encoding, geo_encoding_surface
+        # if self.world_size == 1:
+        #     encoding_g_surf = model.combined_unet_surf(encoding_g)
+        #     encoding_g_vol = model.combined_unet_vol(encoding_g)
+        # else:
+        #     encoding_g_surf = model.module.combined_unet_surf(encoding_g)
+        #     encoding_g_vol = model.module.combined_unet_vol(encoding_g)
+
+        # if self.world_size == 1:
+        #     encoding_g_surf1 = model.geo_rep_surface1(geo_centers_surf, s_grid, sdf_surf_grid)
+        # else:
+        #     encoding_g_surf1 = model.module.geo_rep_surface1(
+        #         geo_centers_surf, s_grid, sdf_surf_grid
+        #     )
+
+        # geo_encoding = 0.5 * encoding_g_surf1 + 0.5 * encoding_g_vol
+        # geo_encoding_surface = 0.5 * encoding_g_surf
+        
+        return 0.5 * encoding_g_vol, 0.5 * encoding_g_surf
 
     @torch.no_grad()
     def compute_solution_on_surface(
@@ -1311,6 +1321,7 @@ class dominoInference():
             geo_encoding_local = model.module.geo_encoding_local(
                 geo_encoding, volume_mesh_centers, p_grid, mode="volume"
             )
+
         if use_sdf_basis:
             pos_encoding = torch.cat(
                 (sdf_nodes, pos_enc_closest, pos_normals_com), axis=-1
@@ -1320,6 +1331,13 @@ class dominoInference():
 
         if self.world_size == 1:
             pos_encoding = model.position_encoder(pos_encoding, eval_mode="volume")
+            print("\n--- DEBUG INFO ---")
+            print(f"volume_mesh_centers    | shape: {volume_mesh_centers.shape} | min: {volume_mesh_centers.min():.6f} | max: {volume_mesh_centers.max():.6f}")
+            print(f"geo_encoding_local     | shape: {geo_encoding_local.shape} | min: {geo_encoding_local.min():.6f} | max: {geo_encoding_local.max():.6f}")
+            print(f"pos_encoding           | shape: {pos_encoding.shape} | min: {pos_encoding.min():.6f} | max: {pos_encoding.max():.6f}")
+            print(f"global_params_values   | shape: {global_params_values.shape} | min: {global_params_values.min():.6f} | max: {global_params_values.max():.6f}")
+            print(f"global_params_reference | shape: {global_params_reference.shape} | min: {global_params_reference.min():.6f} | max: {global_params_reference.max():.6f}")
+            print("--- END DEBUG ---\n")
             tpredictions_batch = model.calculate_solution(
                 volume_mesh_centers,
                 geo_encoding_local,
@@ -1363,8 +1381,7 @@ if __name__ == "__main__":
 
     domino = dominoInference(cfg, dist, False)
     domino.initialize_model(
-        model_path="/lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1_3/2/models/DoMINO.0.499.pt"
-    )
+        model_path="/lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/1/models/DoMINO.0.659.pt")
 
     for count, dirname in enumerate(dirnames_per_gpu):
         print(f"Processing sample {dirname}")
@@ -1376,7 +1393,7 @@ if __name__ == "__main__":
         STREAM_VELOCITY = 148.25
         AIR_DENSITY = 0.38
         PRESSURE = 23840.0
-        STENCIL_SIZE = 7
+        STENCIL_SIZE = 20 # 20 is default value in test.py
 
         domino.set_stl_path(stl_filepath)
         domino.set_stream_velocity(STREAM_VELOCITY)
@@ -1429,8 +1446,8 @@ if __name__ == "__main__":
         
         out_dict = domino.get_out_dict()
         
-        vtp_out_path = f"/lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtp"
-        vtu_out_path = f"/lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtu"
+        vtp_out_path = f"/lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtp"
+        vtu_out_path = f"/lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtu"
         
         domino.mesh_stl.save(vtp_out_path)
 
@@ -1449,15 +1466,13 @@ if __name__ == "__main__":
 
         volume_fields_predicted = torch.cat((out_dict["pressure"], out_dict["velocity"]), axis=-1)[0].cpu().numpy()
         volume_fields_predicted[ids_in_bbox] = 0.0
-        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["pressure"][0].cpu().numpy())
+        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 0:1])
         volParam_vtk.SetName(f"PressurePred")
         polydata.GetPointData().AddArray(volParam_vtk)
-        volParam_vtk = numpy_support.numpy_to_vtk(out_dict["velocity"][0].cpu().numpy())
+        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 1:])
         volParam_vtk.SetName(f"VelocityPred")
         polydata.GetPointData().AddArray(volParam_vtk)
         write_to_vtu(polydata, vtu_out_path)
         print('Write to VTU done for ', dirname)
-
-
 
     exit()
