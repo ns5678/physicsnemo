@@ -1331,7 +1331,6 @@ class dominoInference():
 
         if self.world_size == 1:
             pos_encoding = model.position_encoder(pos_encoding, eval_mode="volume")
-<<<<<<< HEAD
             print("\n--- DEBUG INFO ---")
             print(f"volume_mesh_centers    | shape: {volume_mesh_centers.shape} | min: {volume_mesh_centers.min():.6f} | max: {volume_mesh_centers.max():.6f}")
             print(f"geo_encoding_local     | shape: {geo_encoding_local.shape} | min: {geo_encoding_local.min():.6f} | max: {geo_encoding_local.max():.6f}")
@@ -1339,13 +1338,6 @@ class dominoInference():
             print(f"global_params_values   | shape: {global_params_values.shape} | min: {global_params_values.min():.6f} | max: {global_params_values.max():.6f}")
             print(f"global_params_reference | shape: {global_params_reference.shape} | min: {global_params_reference.min():.6f} | max: {global_params_reference.max():.6f}")
             print("--- END DEBUG ---\n")
-=======
-            print("volume_mesh_centers ", volume_mesh_centers.max(), volume_mesh_centers.min())
-            print("geo_encoding_local ", geo_encoding_local.max(), geo_encoding_local.min())
-            print("pos_encoding ", pos_encoding.max(), pos_encoding.min())
-            print("global_params_values ", global_params_values.max(), global_params_values.min())
-            print("global_params_reference ", global_params_reference.max(), global_params_reference.min())
->>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
             tpredictions_batch = model.calculate_solution(
                 volume_mesh_centers,
                 geo_encoding_local,
@@ -1389,11 +1381,7 @@ if __name__ == "__main__":
 
     domino = dominoInference(cfg, dist, False)
     domino.initialize_model(
-<<<<<<< HEAD
         model_path="/lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/1/models/DoMINO.0.659.pt")
-=======
-        model_path="/lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1/2/models/DoMINO.0.739.pt")
->>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
 
     for count, dirname in enumerate(dirnames_per_gpu):
         print(f"Processing sample {dirname}")

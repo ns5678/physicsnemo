@@ -6,11 +6,7 @@ output: outputs/${project.name}/${exp_tag}
 resume_dir: ${output}/models
 data_processor:
   kind: lc_data
-<<<<<<< HEAD
   output_dir: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/train/
-=======
-  output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
->>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
   input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
@@ -36,13 +32,8 @@ variables:
       type: scalar
       reference: 23840.0
 data:
-<<<<<<< HEAD
   input_dir: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/train/
   input_dir_val: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/test/
-=======
-  input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/train/
-  input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/test/
->>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
   bounding_box:
     min:
     - -5.0
@@ -188,16 +179,9 @@ val:
     shuffle: true
     drop_last: false
 eval:
-<<<<<<< HEAD
   test_path: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inference/
   save_path: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inferred/
   checkpoint_name: DoMINO.0.659.pt
   scaling_param_path: /lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/
-=======
-  test_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inference-nim/
-  save_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/
-  checkpoint_name: DoMINO.0.659.pt
-  scaling_param_path: /lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/
->>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
   refine_stl: false
   stencil_size: 7
