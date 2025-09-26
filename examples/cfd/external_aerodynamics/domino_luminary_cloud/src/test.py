@@ -187,6 +187,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                     pos_encoding = model.position_encoder(
                         pos_encoding, eval_mode="volume"
                     )
+<<<<<<< HEAD
                     print("\n--- DEBUG INFO ---")
                     print(f"volume_mesh_centers_batch | shape: {volume_mesh_centers_batch.shape} | min: {volume_mesh_centers_batch.min():.6f} | max: {volume_mesh_centers_batch.max():.6f}")
                     print(f"geo_encoding_local       | shape: {geo_encoding_local.shape} | min: {geo_encoding_local.min():.6f} | max: {geo_encoding_local.max():.6f}")
@@ -194,6 +195,13 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                     print(f"global_params_values     | shape: {global_params_values.shape} | min: {global_params_values.min():.6f} | max: {global_params_values.max():.6f}")
                     print(f"global_params_reference  | shape: {global_params_reference.shape} | min: {global_params_reference.min():.6f} | max: {global_params_reference.max():.6f}")
                     print("--- END DEBUG ---\n")
+=======
+                    print("volume_mesh_centers_batch ", volume_mesh_centers_batch.max(), volume_mesh_centers_batch.min())
+                    print("geo_encoding_local ", geo_encoding_local.max(), geo_encoding_local.min())
+                    print("pos_encoding ", pos_encoding.max(), pos_encoding.min())
+                    print("global_params_values ", global_params_values.max(), global_params_values.min())
+                    print("global_params_reference ", global_params_reference.max(), global_params_reference.min())
+>>>>>>> b66f66820c80530fc3401ec513fb8213831c69ef
                     tpredictions_batch = model.calculate_solution(
                         volume_mesh_centers_batch,
                         geo_encoding_local,
