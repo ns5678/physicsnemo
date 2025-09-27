@@ -76,7 +76,7 @@ def main(cfg: DictConfig) -> None:
     ################################
     # Check if scaling exists
     ################################
-    pickle_path = output_dir + "/scaling_factors.pkl"
+    pickle_path = Path(output_dir) / "scaling_factors.pkl"
 
     try:
         scaling_factors = ScalingFactors.load(pickle_path)
@@ -140,12 +140,12 @@ def main(cfg: DictConfig) -> None:
         ################################
         if dist.rank == 0:
             # Save as structured pickle file
-            pickle_path = output_dir + "/scaling_factors.pkl"
+            pickle_path = Path(cfg.output) / "scaling_factors" / "scaling_factors.pkl"
             scaling_factors.save(pickle_path)
             logger.info(f"Scaling factors saved to: {pickle_path}")
 
             # Save summary report
-            summary_path = output_dir + "/scaling_factors_summary.txt"
+            summary_path = Path(cfg.output) / "scaling_factors" / "scaling_factors_summary.txt"
             with open(summary_path, "w") as f:
                 f.write(scaling_factors.summary())
             logger.info(f"Summary report saved to: {summary_path}")

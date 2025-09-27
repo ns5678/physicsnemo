@@ -37,7 +37,7 @@ resume_dir: ${output}/models
 # │            Data Preprocessing             │
 # └───────────────────────────────────────────┘  
 data_processor: # Data processor configurable parameters
-  kind: drivaer_aws # must be either drivesim or drivaer_aws
+  kind: lc_data # must be either drivesim or drivaer_aws
   output_dir: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/optimized/train
   input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
@@ -59,8 +59,7 @@ variables:
   global_parameters:
     inlet_velocity:
       type: vector
-      reference:
-      - 148.25
+      reference: [148.25]
     air_density:
       type: scalar
       reference: 0.38
@@ -107,8 +106,8 @@ model:
   interp_res: [128, 128, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   positional_encoding: false # calculate positional encoding?
-  volume_points_sample: 65536 # Number of points to sample in volume per epoch
-  surface_points_sample: 65536 # Number of points to sample on surface per epoch
+  volume_points_sample: 32768 # Number of points to sample in volume per epoch
+  surface_points_sample: 32768 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: random #random or area_weighted
   geom_points_sample: 300_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?

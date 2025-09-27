@@ -30,6 +30,7 @@ import pandas as pd
 import pyvista as pv
 import vtk
 from physicsnemo.utils.domino.utils import *
+from physicsnemo.utils.domino.vtk_file_utils import *
 from torch.utils.data import Dataset
 
 # AIR_DENSITY = 1.205
@@ -271,12 +272,8 @@ class OpenFoamDataset(Dataset):
                 )
         global_params_values = np.array(global_params_values_list, dtype=np.float32)
 
-
-        print('Surface fields shape: ', surface_fields.shape, 'Volume fields shape: ', volume_fields.shape)
-        print('Surface fields min: ', np.min(surface_fields), 'Surface fields max: ', np.max(surface_fields))
-        print('Volume fields min: ', np.min(volume_fields), 'Volume fields max: ', np.max(volume_fields))
-        print('global_params_values:', global_params_values)
-        print('global_params_reference:', global_params_reference)
+        print('global_params_values shape: ', global_params_values.shape)
+        print('global_params_reference shape: ', global_params_reference.shape)
         
         # Add the parameters to the dictionary
         return {

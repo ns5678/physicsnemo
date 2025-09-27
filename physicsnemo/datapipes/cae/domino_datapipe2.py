@@ -950,6 +950,7 @@ def compute_scaling_factors(
     dataset = DrivaerMLDataset(
         data_dir=input_path,
         keys_to_read=target_keys,
+        keys_to_read_if_available=target_keys,
         output_device=device,
     )
 

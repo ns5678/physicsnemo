@@ -1881,8 +1881,10 @@ class DoMINO(nn.Module):
         surf_min = data_dict["surface_min_max"][:, 0]
 
         # Parameters
-        global_params_values = data_dict["global_params_values"]
-        global_params_reference = data_dict["global_params_reference"]
+        batch_size = surf_max.shape[0]
+        global_params_values = data_dict["global_params_values"].expand(batch_size, -1).unsqueeze(-1)  # [batch_size, 3, 1]
+        global_params_reference = data_dict["global_params_reference"].expand(batch_size, -1).unsqueeze(-1)  # [batch_size, 3, 1]
+        
 
         if self.output_features_vol is not None:
             # Represent geometry on computational grid

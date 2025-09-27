@@ -293,7 +293,7 @@ def main(cfg: DictConfig) -> None:
     ######################################################
     # Get scaling factors - precompute them if this fails!
     ######################################################
-    pickle_path = os.path.join(cfg.data.scaling_factors)
+    pickle_path = Path(cfg.output) / "scaling_factors" / "scaling_factors.pkl"
 
     try:
         scaling_factors = ScalingFactors.load(pickle_path)
@@ -557,8 +557,6 @@ def main(cfg: DictConfig) -> None:
         )
         epoch_end_time = time.perf_counter()
 
-        return
-
         model.eval()
         avg_vloss = validation_step(
             dataloader=val_dataloader,
@@ -620,7 +618,7 @@ def main(cfg: DictConfig) -> None:
         if scheduler.get_last_lr()[0] == 1e-6:
             print("Training ended")
             exit()
-
+    return
 
 if __name__ == "__main__":
     # Profiler().enable("torch")

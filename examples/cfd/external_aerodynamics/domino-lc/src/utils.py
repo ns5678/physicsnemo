@@ -108,10 +108,11 @@ def get_keys_to_read(
     # If these keys are in the config, use them, else provide defaults in
     # case they aren't in the dataset:
     # TODO
-    keys_to_read_if_available = {
-        "global_params_values": torch.tensor([[30.0], [1.226]]),
-        "global_params_reference": torch.tensor([[30.0], [1.226]]),
-    }
+    # keys_to_read_if_available = {
+    #     "global_params_values": torch.tensor([[148.25], [0.38], [23840.0]]),
+    #     "global_params_reference": torch.tensor([[148.25], [0.38], [23840.0]]),
+    # }
+    keys_to_read_if_available = { }
 
     # Volume keys:
     volume_keys = [
@@ -133,6 +134,8 @@ def get_keys_to_read(
         keys_to_read.extend(volume_keys)
     if model_type == "surface" or model_type == "combined":
         keys_to_read.extend(surface_keys)
+    
+    keys_to_read.extend(["global_params_values", "global_params_reference"])
 
     return keys_to_read, keys_to_read_if_available
 

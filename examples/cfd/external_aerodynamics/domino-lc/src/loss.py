@@ -539,10 +539,10 @@ def compute_loss_dict(
         target_surf = batch_inputs["surface_fields"]
         surface_areas = batch_inputs["surface_areas"]
         surface_areas = torch.unsqueeze(surface_areas, -1)
-        surface_normals = batch_inputs["surface_normals"]
+        # surface_normals = batch_inputs["surface_normals"]
 
         # Needs to be taken from the dataset
-        stream_velocity = batch_inputs["global_params_values"][:, 0, :]
+        # stream_velocity = batch_inputs["global_params_values"][:, 0, :]
 
         loss_surf = loss_fn_surface(
             prediction_surf,
@@ -550,35 +550,35 @@ def compute_loss_dict(
             loss_fn_type.loss_type,
         )
 
-        loss_surf_area = loss_fn_area(
-            prediction_surf,
-            target_surf,
-            surface_normals,
-            surface_areas,
-            area_scaling_factor=loss_fn_type.area_weighing_factor,
-            loss_type=loss_fn_type.loss_type,
-        )
+        # loss_surf_area = loss_fn_area(
+        #     prediction_surf,
+        #     target_surf,
+        #     surface_normals,
+        #     surface_areas,
+        #     area_scaling_factor=loss_fn_type.area_weighing_factor,
+        #     loss_type=loss_fn_type.loss_type,
+        # )
 
         if loss_fn_type.loss_type == "mse":
             loss_surf = loss_surf * surf_loss_scaling
-            loss_surf_area = loss_surf_area * surf_loss_scaling
+            # loss_surf_area = loss_surf_area * surf_loss_scaling
 
         total_loss_terms.append(loss_surf)
         loss_dict["loss_surf"] = loss_surf
-        total_loss_terms.append(loss_surf_area)
-        loss_dict["loss_surf_area"] = loss_surf_area
-        loss_integral = (
-            integral_loss_fn(
-                prediction_surf,
-                target_surf,
-                surface_areas,
-                surface_normals,
-                stream_velocity,
-                padded_value=-10,
-            )
-        ) * integral_scaling_factor
-        loss_dict["loss_integral"] = loss_integral
-        total_loss_terms.append(loss_integral)
+        # total_loss_terms.append(loss_surf_area)
+        # loss_dict["loss_surf_area"] = loss_surf_area
+        # loss_integral = (
+        #     integral_loss_fn(
+        #         prediction_surf,
+        #         target_surf,
+        #         surface_areas,
+        #         surface_normals,
+        #         stream_velocity,
+        #         padded_value=-10,
+        #     )
+        # ) * integral_scaling_factor
+        # loss_dict["loss_integral"] = loss_integral
+        # total_loss_terms.append(loss_integral)
 
     total_loss = sum(total_loss_terms)
     loss_dict["total_loss"] = total_loss

@@ -28,7 +28,7 @@ import multiprocessing
 import hydra, time
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
-
+import numpy as np
 
 def process_files(*args_list):
     ids = args_list[0]
