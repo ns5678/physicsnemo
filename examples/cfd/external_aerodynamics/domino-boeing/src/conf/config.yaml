@@ -98,7 +98,7 @@ domain_parallelism:
 # └───────────────────────────────────────────┘  
 model:
   model_type: combined # train which model? surface, volume, combined
-  activation: "relu" # "relu" or "gelu"
+  activation: "gelu" # "relu" or "gelu"
   loss_function: 
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 10000 # Generally inverse of maximum area
@@ -134,8 +134,8 @@ model:
       surface_radii: [0.01, 0.05, 1.0] # radii for surface
       surface_hops: 1 # Number of surface iterations
       volume_hops: 1 # Number of volume iterations
-      volume_neighbors_in_radius: [10, 10, 10, 10] # Number of neighbors in radius for volume
-      surface_neighbors_in_radius: [10, 10, 10] # Number of neighbors in radius for surface
+      volume_neighbors_in_radius: [32, 64, 128, 256] # Number of neighbors in radius for volume
+      surface_neighbors_in_radius: [8, 16, 128] # Number of neighbors in radius for surface
       fourier_features: false
       num_modes: 5
       activation: ${model.activation}
