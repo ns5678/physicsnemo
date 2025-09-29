@@ -17,11 +17,8 @@
 import os
 import time
 from hydra.utils import to_absolute_path
-from omegaconf import DictConfig
-from typing import Optional, Union
-
 from omegaconf import DictConfig, OmegaConf
-
+from typing import Optional, Union
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -47,21 +44,23 @@ from torch.cuda.amp import autocast
 from torch.nn.parallel import DistributedDataParallel
 from physicsnemo.distributed import DistributedManager
 
-from typing import Optional, Union
 import warp as wp
 
 try:
     import cuml
+
     CUML_AVAILABLE = True
 except:
     CUML_AVAILABLE = False
 
 try:
     import cupy as cp
+
     CUPY_AVAILABLE = True
 except:
     CUPY_AVAILABLE = False
     cp = None
+
 
 def plot(truth, prediction, var, save_path, axes_titles=None, plot_error=True):
     if plot_error:
@@ -71,45 +70,60 @@ def plot(truth, prediction, var, save_path, axes_titles=None, plot_error=True):
     fig, axes = plt.subplots(1, c, figsize=(15, 5))
     error = truth - prediction
     # Plot Truth
-    im = axes[0].imshow(truth, cmap='jet', vmax=np.ma.masked_invalid(truth).max(), vmin=np.ma.masked_invalid(truth).min())
-    axes[0].axis('off')
-    cbar = fig.colorbar(im, ax=axes[0], orientation='vertical')
+    im = axes[0].imshow(
+        truth,
+        cmap="jet",
+        vmax=np.ma.masked_invalid(truth).max(),
+        vmin=np.ma.masked_invalid(truth).min(),
+    )
+    axes[0].axis("off")
+    cbar = fig.colorbar(im, ax=axes[0], orientation="vertical")
     cbar.ax.tick_params(labelsize=12)
     if axes_titles is None:
-        axes[0].set_title(f'{var} Truth')
+        axes[0].set_title(f"{var} Truth")
     else:
         axes[0].set_title(axes_titles[0])
-    
+
     # Plot Predictions
-    im = axes[1].imshow(prediction, cmap='jet', vmax=np.ma.masked_invalid(prediction).max(), vmin=np.ma.masked_invalid(prediction).min())
-    axes[1].axis('off')
-    cbar = fig.colorbar(im, ax=axes[1], orientation='vertical')
+    im = axes[1].imshow(
+        prediction,
+        cmap="jet",
+        vmax=np.ma.masked_invalid(prediction).max(),
+        vmin=np.ma.masked_invalid(prediction).min(),
+    )
+    axes[1].axis("off")
+    cbar = fig.colorbar(im, ax=axes[1], orientation="vertical")
     cbar.ax.tick_params(labelsize=12)
     if axes_titles is None:
-        axes[1].set_title(f'{var} Predicted')
+        axes[1].set_title(f"{var} Predicted")
     else:
         axes[1].set_title(axes_titles[1])
-    
+
     if plot_error:
         # Plot Error
-        im = axes[2].imshow(error, cmap='jet', vmax=np.ma.masked_invalid(error).max(), vmin=np.ma.masked_invalid(error).min())
-        axes[2].axis('off')
-        cbar = fig.colorbar(im, ax=axes[2], orientation='vertical')
+        im = axes[2].imshow(
+            error,
+            cmap="jet",
+            vmax=np.ma.masked_invalid(error).max(),
+            vmin=np.ma.masked_invalid(error).min(),
+        )
+        axes[2].axis("off")
+        cbar = fig.colorbar(im, ax=axes[2], orientation="vertical")
         cbar.ax.tick_params(labelsize=12)
         if axes_titles is None:
-            axes[2].set_title(f'{var} Error')
+            axes[2].set_title(f"{var} Error")
         else:
             axes[2].set_title(axes_titles[2])
-    
+
         MAE = np.mean(np.ma.masked_invalid((error)))
-        
+
         if MAE:
-            fig.suptitle(f'MAE {MAE}', fontsize=18, x=0.5)
+            fig.suptitle(f"MAE {MAE}", fontsize=18, x=0.5)
 
     plt.tight_layout()
-            
+
     path_to_save_path = os.path.join(save_path)
-    plt.savefig(path_to_save_path, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(path_to_save_path, bbox_inches="tight", pad_inches=0.1)
     plt.close()
 
 
@@ -122,7 +136,6 @@ def _bvh_query_distance(
     sdf_hit_point: wp.array(dtype=wp.vec3f),
     sdf_hit_point_id: wp.array(dtype=wp.int32),
 ):
-
     """
     Computes the signed distance from each point in the given array `points`
     to the mesh represented by `mesh`,within the maximum distance `max_dist`,
@@ -157,6 +170,7 @@ def _bvh_query_distance(
     sdf_hit_point[tid] = p_closest
     sdf_hit_point_id[tid] = res.face
 
+
 class SignedDistanceFieldModule(nn.Module):
     def __init__(
         self,
@@ -167,7 +181,7 @@ class SignedDistanceFieldModule(nn.Module):
     ):
         """
         A torch.nn.Module that wraps Warp's signed_distance_field utility for inference.
-        
+
         Args:
             mesh_vertices: (V, 3) float32 array or tensor of mesh vertex positions.
             mesh_indices: (F, 3) int32 array or tensor of triangle indices.
@@ -182,20 +196,27 @@ class SignedDistanceFieldModule(nn.Module):
 
         # Convert mesh to Warp format
         mesh_vertices = (
-            mesh_vertices.cpu().numpy() if isinstance(mesh_vertices, torch.Tensor) else mesh_vertices
+            mesh_vertices.cpu().numpy()
+            if isinstance(mesh_vertices, torch.Tensor)
+            else mesh_vertices
         )
         mesh_indices = (
-            mesh_indices.cpu().numpy() if isinstance(mesh_indices, torch.Tensor) else mesh_indices
+            mesh_indices.cpu().numpy()
+            if isinstance(mesh_indices, torch.Tensor)
+            else mesh_indices
         )
 
         self.mesh = wp.Mesh(
             wp.array(mesh_vertices, dtype=wp.vec3),
-            wp.array(mesh_indices.flatten(), dtype=wp.int32)
+            wp.array(mesh_indices.flatten(), dtype=wp.int32),
         )
 
-    def forward(self, input_points: Union[np.ndarray, torch.Tensor], 
-                include_hit_points: bool = False, 
-                include_hit_points_id: bool = False):
+    def forward(
+        self,
+        input_points: Union[np.ndarray, torch.Tensor],
+        include_hit_points: bool = False,
+        include_hit_points_id: bool = False,
+    ):
         """
         Args:
             input_points: (N, 3) float32 array or tensor of points.
@@ -215,7 +236,14 @@ class SignedDistanceFieldModule(nn.Module):
         wp.launch(
             kernel=_bvh_query_distance,
             dim=len(sdf_points),
-            inputs=[self.mesh.id, sdf_points, self.max_dist, sdf, sdf_hit_point, sdf_hit_point_id],
+            inputs=[
+                self.mesh.id,
+                sdf_points,
+                self.max_dist,
+                sdf,
+                sdf_hit_point,
+                sdf_hit_point_id,
+            ],
         )
 
         # Convert results to torch tensors
@@ -232,12 +260,14 @@ class SignedDistanceFieldModule(nn.Module):
 
 
 def shuffle_array_torch(surface_vertices, geometry_points, device):
-    idx = torch.unsqueeze(torch.randperm(surface_vertices.shape[0])[:geometry_points], -1).to(device)
+    idx = torch.unsqueeze(
+        torch.randperm(surface_vertices.shape[0])[:geometry_points], -1
+    ).to(device)
     idx = idx.repeat(1, 3)
     surface_sampled = torch.gather(surface_vertices, 0, idx)
     return surface_sampled
 
-class inferenceDataPipe():
+class inferenceDataPipe:
     def __init__(
         self,
         device: int = 0,
@@ -263,7 +293,7 @@ class inferenceDataPipe():
         self.positional_encoding = positional_encoding
         self.use_sdf_basis = use_sdf_basis
         self.array_provider = cp if gpu_preprocessing else np
-        torch.manual_seed(int(42+torch.cuda.current_device()))
+        torch.manual_seed(int(42 + torch.cuda.current_device()))
         self.data_dict = {}
 
     def clear_dict(self):
@@ -287,7 +317,7 @@ class inferenceDataPipe():
         zv = torch.unsqueeze(zv, -1)
         grid = torch.cat((xv, yv, zv), axis=-1)
         return grid
-        
+
     def process_surface_mesh(self, bounding_box=None, bounding_box_surface=None):
         # Use coarse mesh to calculate SDF
         surface_vertices = self.surface_vertices
@@ -327,7 +357,9 @@ class inferenceDataPipe():
         grid_reshaped = torch.reshape(grid, (nx * ny * nz, 3))
 
         # SDF on grid
-        sdf_module = SignedDistanceFieldModule(surface_vertices, surface_indices, device=self.device).to(self.device)
+        sdf_module = SignedDistanceFieldModule(
+            surface_vertices, surface_indices, device=self.device
+        ).to(self.device)
         sdf_grid = sdf_module(grid_reshaped)
         sdf_grid = torch.reshape(sdf_grid, (nx, ny, nz))
 
@@ -405,14 +437,10 @@ class inferenceDataPipe():
                     algorithm="rbc",
                 )
                 knn.fit(surface_coordinates)
-                ii = knn.kneighbors(
-                    surface_coordinates, return_distance=False
-                )
+                ii = knn.kneighbors(surface_coordinates, return_distance=False)
             else:
                 interp_func = KDTree(surface_coordinates)
-                _, ii = interp_func.query(
-                    surface_coordinates, k=stencil_size
-                )
+                _, ii = interp_func.query(surface_coordinates, k=stencil_size)
 
             surface_neighbors = surface_coordinates[ii]
             surface_neighbors = surface_neighbors[:, 1:] + 1e-6
@@ -477,17 +505,19 @@ class inferenceDataPipe():
         )
 
     def sample_points_in_volume(
-        self, num_points_vol=None, point_cloud=None, max_min=None, center_of_mass=None, bounding_box=None
+        self,
+        num_points_vol=None,
+        point_cloud=None,
+        max_min=None,
+        center_of_mass=None,
+        bounding_box=None,
     ):
-
         if bounding_box is not None:
             c_max = bounding_box[1]
             c_min = bounding_box[0]
         else:
             c_min = max_min[0]
             c_max = max_min[1]
-
-        start_time = time.time()
 
         nx, ny, nz = self.grid_resolution
 
@@ -502,7 +532,9 @@ class inferenceDataPipe():
                     num_pts_vol, 3, device=self.device, dtype=torch.float32
                 ) + c_min
 
-                sdf_module = SignedDistanceFieldModule(self.surface_vertices, self.surface_indices, device=self.device).to(self.device)
+                sdf_module = SignedDistanceFieldModule(
+                    self.surface_vertices, self.surface_indices, device=self.device
+                ).to(self.device)
                 sdf_nodes = sdf_module(
                     volume_coordinates_sub,
                     include_hit_points=False,
@@ -524,9 +556,13 @@ class inferenceDataPipe():
                     volume_coordinates = volume_coordinates[:num_points_vol]
                     break
         else:
-            volume_coordinates = torch.from_numpy(np.float32(point_cloud)).to(self.device)
+            volume_coordinates = torch.from_numpy(np.float32(point_cloud)).to(
+                self.device
+            )
 
-        sdf_module = SignedDistanceFieldModule(self.surface_vertices, self.surface_indices, device=self.device).to(self.device)
+        sdf_module = SignedDistanceFieldModule(
+            self.surface_vertices, self.surface_indices, device=self.device
+        ).to(self.device)
 
         sdf_nodes, sdf_node_closest_point = sdf_module(
             volume_coordinates,
@@ -558,15 +594,15 @@ class inferenceDataPipe():
             scaling_factors,
         )
 
-class dominoInference():
+
+class dominoInference:
     def __init__(
         self,
         cfg: DictConfig,
         dist: None,
         cached_geo_encoding: False,
         device: Optional[str] = None,
-    ):  
-
+    ):
         self.cfg = cfg
         self.dist = dist
         self.stream_velocity = None
@@ -584,8 +620,31 @@ class dominoInference():
             self.device = self.dist.device
             self.world_size = self.dist.world_size
 
-        self.air_density = torch.full((1, 1), 0.38, dtype=torch.float32).to(self.device)
-        self.num_vol_vars, self.num_surf_vars, self.num_global_features = self.get_num_variables()
+        # Initialize pressure and air_density from config with defaults
+        pressure_value = (
+            cfg.get("variables", {})
+            .get("global_parameters", {})
+            .get("pressure", {})
+            .get("reference", 23840.0)
+        )
+        air_density_value = (
+            cfg.get("variables", {})
+            .get("global_parameters", {})
+            .get("air_density", {})
+            .get("reference", 0.38)
+        )
+
+        self.pressure = torch.full((1, 1), pressure_value, dtype=torch.float32).to(
+            self.device
+        )
+        self.air_density = torch.full(
+            (1, 1), air_density_value, dtype=torch.float32
+        ).to(self.device)
+
+        self.num_vol_vars, self.num_surf_vars, self.num_global_features = (
+            self.get_num_variables()
+        )
+
         self.model = None
         self.grid_resolution = torch.tensor(self.cfg.model.interp_res).to(self.device)
         self.vol_factors = None
@@ -603,7 +662,7 @@ class dominoInference():
 
     def get_geometry_encoding_surface(self):
         return self.geometry_encoding_surface
-        
+
     def get_out_dict(self):
         return self.out_dict
 
@@ -612,55 +671,71 @@ class dominoInference():
 
     def initialize_data_processor(self):
         self.ifp = inferenceDataPipe(
-                device=self.device,
-                surface_vertices=self.stl_vertices,
-                surface_indices=self.mesh_indices_flattened,
-                surface_areas=self.surface_areas,
-                surface_centers=self.stl_centers,
-                grid_resolution=self.grid_resolution,
-                normalize_coordinates=True,
-                geom_points_sample=300000,
-                positional_encoding=False,
-                use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
-            )
-
-    def load_bounding_box(self):
-        if self.cfg.data.bounding_box.min is not None and self.cfg.data.bounding_box.max is not None:
-            c_min = torch.from_numpy(np.array(self.cfg.data.bounding_box.min, dtype=np.float32)).to(self.device)
-            c_max = torch.from_numpy(np.array(self.cfg.data.bounding_box.max, dtype=np.float32)).to(self.device)
-            self.bounding_box_min_max = [c_min, c_max]
-
-        if self.cfg.data.bounding_box_surface.min is not None and self.cfg.data.bounding_box_surface.max is not None:
-            c_min = torch.from_numpy(np.array(self.cfg.data.bounding_box_surface.min, dtype=np.float32)).to(self.device)
-            c_max = torch.from_numpy(np.array(self.cfg.data.bounding_box_surface.max, dtype=np.float32)).to(self.device)
-            self.bounding_box_surface_min_max = [c_min, c_max]
-    
-    def load_volume_scaling_factors(self):
-        # vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
-        # vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
-        # vol_factors = np.stack([vol_mean, vol_std])
-        # vol_factors = torch.from_numpy(vol_factors).to(self.device)
-        scaling_param_path = self.cfg.eval.scaling_param_path
-        vol_factors_path = os.path.join(
-            scaling_param_path, "volume_scaling_factors.npy"
+            device=self.device,
+            surface_vertices=self.stl_vertices,
+            surface_indices=self.mesh_indices_flattened,
+            surface_areas=self.surface_areas,
+            surface_centers=self.stl_centers,
+            grid_resolution=self.grid_resolution,
+            normalize_coordinates=True,
+            geom_points_sample=300000,
+            positional_encoding=False,
+            use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
         )
 
-        vol_factors = np.load(vol_factors_path, allow_pickle=True)
+    def load_bounding_box(self):
+        if (
+            self.cfg.data.bounding_box.min is not None
+            and self.cfg.data.bounding_box.max is not None
+        ):
+            c_min = torch.from_numpy(
+                np.array(self.cfg.data.bounding_box.min, dtype=np.float32)
+            ).to(self.device)
+            c_max = torch.from_numpy(
+                np.array(self.cfg.data.bounding_box.max, dtype=np.float32)
+            ).to(self.device)
+            self.bounding_box_min_max = [c_min, c_max]
+
+        if (
+            self.cfg.data.bounding_box_surface.min is not None
+            and self.cfg.data.bounding_box_surface.max is not None
+        ):
+            c_min = torch.from_numpy(
+                np.array(self.cfg.data.bounding_box_surface.min, dtype=np.float32)
+            ).to(self.device)
+            c_max = torch.from_numpy(
+                np.array(self.cfg.data.bounding_box_surface.max, dtype=np.float32)
+            ).to(self.device)
+            self.bounding_box_surface_min_max = [c_min, c_max]
+
+    def load_volume_scaling_factors(self):
+        vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
+        vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
+        vol_factors = np.stack([vol_mean, vol_std])
         vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        # scaling_param_path = self.cfg.eval.scaling_param_path
+        # vol_factors_path = os.path.join(
+        #     scaling_param_path, "volume_scaling_factors.npy"
+        # )
+
+        # vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        # vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
         return vol_factors
 
     def load_surface_scaling_factors(self):
-        # surf_mean = np.array(self.cfg.data.scaling_factors.surface.mean, dtype=np.float32)
-        # surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
-        # surf_factors = np.stack([surf_mean, surf_std])
-        # surf_factors = torch.from_numpy(surf_factors).to(self.device)
-        scaling_param_path = self.cfg.eval.scaling_param_path
-        surf_factors_path = os.path.join(
-            scaling_param_path, "surface_scaling_factors.npy"
+        surf_mean = np.array(
+            self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
         )
-        surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
+        surf_factors = np.stack([surf_mean, surf_std])
         surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        # scaling_param_path = self.cfg.eval.scaling_param_path
+        # surf_factors_path = os.path.join(
+        #     scaling_param_path, "surface_scaling_factors.npy"
+        # )
+        # surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        # surf_factors = torch.from_numpy(surf_factors).to(self.device)
 
         return surf_factors
 
@@ -674,11 +749,13 @@ class dominoInference():
         stl_faces = np.array(mesh_stl.faces).reshape((-1, 4))[:, 1:]
         mesh_indices_flattened = stl_faces.flatten()
 
-        surface_areas = mesh_stl.compute_cell_sizes(length=False, area=True, volume=False)
+        surface_areas = mesh_stl.compute_cell_sizes(
+            length=False, area=True, volume=False
+        )
         surface_areas = np.array(surface_areas.cell_data["Area"])
         idx = np.where(surface_areas > 0.0)
         surface_normals = np.array(mesh_stl.cell_normals, dtype=np.float32)
-        
+
         surface_areas = surface_areas[idx]
         stl_centers = stl_centers[idx]
         surface_normals = surface_normals[idx]
@@ -686,15 +763,16 @@ class dominoInference():
         self.stl_vertices = torch.from_numpy(np.float32(stl_vertices)).to(self.device)
         self.stl_centers = torch.from_numpy(np.float32(stl_centers)).to(self.device)
         self.surface_areas = torch.from_numpy(np.float32(surface_areas)).to(self.device)
-        # self.stl_normals = -1.0*torch.from_numpy(np.float32(surface_normals)).to(self.device) # LC ShiftWing dataset works with positive normals
         self.stl_normals = torch.from_numpy(np.float32(surface_normals)).to(self.device)
-        self.mesh_indices_flattened = torch.from_numpy(np.int32(mesh_indices_flattened)).to(
-                self.device
-            )
+        self.mesh_indices_flattened = torch.from_numpy(
+            np.int32(mesh_indices_flattened)
+        ).to(self.device)
         self.length_scale = length_scale
         self.mesh_stl = mesh_stl
 
-    def read_stl_trimesh(self, stl_vertices, stl_faces, stl_centers, surface_normals, surface_areas):
+    def read_stl_trimesh(
+        self, stl_vertices, stl_faces, stl_centers, surface_normals, surface_areas
+    ):
         mesh_indices_flattened = stl_faces.flatten()
         length_scale = np.amax(np.amax(stl_vertices, 0) - np.amin(stl_vertices, 0))
 
@@ -705,9 +783,11 @@ class dominoInference():
 
         self.stl_vertices = torch.from_numpy(stl_vertices).to(self.device)
         self.stl_centers = torch.from_numpy(stl_centers).to(self.device)
-        self.stl_normals = -1.0*torch.from_numpy(surface_normals).to(self.device)
+        self.stl_normals = -1.0 * torch.from_numpy(surface_normals).to(self.device)
         self.surface_areas = torch.from_numpy(surface_areas).to(self.device)
-        self.mesh_indices_flattened = torch.from_numpy(np.int32(mesh_indices_flattened)).to(self.device)
+        self.mesh_indices_flattened = torch.from_numpy(
+            np.int32(mesh_indices_flattened)
+        ).to(self.device)
         self.length_scale = length_scale
 
     def get_num_variables(self):
@@ -728,13 +808,13 @@ class dominoInference():
                 num_surf_vars += 1
 
         num_global_features = 0
-        global_params_names = list(cfg.variables.global_parameters.keys())
+        global_params_names = list(self.cfg.variables.global_parameters.keys())
         for param in global_params_names:
-            if cfg.variables.global_parameters[param].type == "vector":
+            if self.cfg.variables.global_parameters[param].type == "vector":
                 num_global_features += len(
-                    cfg.variables.global_parameters[param].reference
+                    self.cfg.variables.global_parameters[param].reference
                 )
-            elif cfg.variables.global_parameters[param].type == "scalar":
+            elif self.cfg.variables.global_parameters[param].type == "scalar":
                 num_global_features += 1
             else:
                 raise ValueError(f"Unknown global parameter type")
@@ -753,15 +833,13 @@ class dominoInference():
             .to(self.device)
             .eval()
         )
-        # model = torch.compile(model, disable=True)
 
         checkpoint_iter = torch.load(
-            to_absolute_path(model_path),
-            map_location=self.device
+            to_absolute_path(model_path), map_location=self.device
         )
 
         model.load_state_dict(checkpoint_iter)
-        
+
         if self.dist is not None and self.world_size > 1:
             model = DistributedDataParallel(
                 model,
@@ -779,17 +857,9 @@ class dominoInference():
         self.load_bounding_box()
 
     def set_stream_velocity(self, stream_velocity):
-        self.stream_velocity = torch.full((1, 1), stream_velocity, dtype=torch.float32).to(self.device)
-    
-    def set_air_density(self, air_density):
-        self.air_density = torch.full((1, 1), air_density, dtype=torch.float32).to(
-            self.device
-        )
-    
-    def set_pressure(self, pressure):
-        self.pressure = torch.full((1, 1), pressure, dtype=torch.float32).to(
-            self.device
-        )
+        self.stream_velocity = torch.full(
+            (1, 1), stream_velocity, dtype=torch.float32
+        ).to(self.device)
 
     def set_stencil_size(self, stencil_size):
         self.stencil_size = stencil_size
@@ -800,10 +870,19 @@ class dominoInference():
     @torch.no_grad()
     def compute_geo_encoding(self, cached_geom_path=None):
         start_time = time.time()
-        
+
         if not self.cached_geo_encoding:
-            surface_vertices, grid, sdf_grid, max_min, s_grid, surf_sdf_grid, surf_max_min, center_of_mass = (
-                self.ifp.process_surface_mesh(self.bounding_box_min_max, self.bounding_box_surface_min_max)
+            (
+                surface_vertices,
+                grid,
+                sdf_grid,
+                max_min,
+                s_grid,
+                surf_sdf_grid,
+                surf_max_min,
+                center_of_mass,
+            ) = self.ifp.process_surface_mesh(
+                self.bounding_box_min_max, self.bounding_box_surface_min_max
             )
             if self.bounding_box_min_max is None:
                 self.bounding_box_min_max = max_min
@@ -827,47 +906,52 @@ class dominoInference():
             self.center_of_mass = out_dict_cached["com"]
             geo_encoding = out_dict_cached["geo_encoding"]
             geo_encoding_surface = out_dict_cached["geo_encoding_surface"]
-            self.out_dict["sdf"] = self.sdf_grid 
-        #torch.cuda.synchronize()
+            self.out_dict["sdf"] = self.sdf_grid
         print("Time taken for geo encoding = %f" % (time.time() - start_time))
 
         self.geometry_encoding = geo_encoding
         self.geometry_encoding_surface = geo_encoding_surface
 
         self.out_dict["bounding_box_dims"] = torch.vstack(self.bounding_box_min_max)
-        # self.out_dict["bounding_box_dims_surface"] = torch.vstack(self.bounding_box_surface_min_max)
-
-        # self.out_dict["surface_scaling_factors"] = self.surf_factors
-        # self.out_dict["volume_scaling_factors"] = self.vol_factors
-
-        # self.out_dict["model_parameters"] = self.cfg.model
 
     def compute_forces(self):
         pressure = self.out_dict["pressure_surface"]
         wall_shear = self.out_dict["wall-shear-stress"]
-        # sampling_indices = self.out_dict["sampling_indices"]
 
         if self.surface_mesh is None:
             surface_normals = self.stl_normals[self.sampling_indices]
             surface_areas = self.surface_areas[self.sampling_indices]
         else:
-            surface_areas = torch.tensor(self.surface_mesh["surface_mesh_areas"][self.sampling_indices]).to(self.device)
-            surface_normals = torch.tensor(self.surface_mesh["surface_mesh_normals"][self.sampling_indices]).to(self.device)
+            surface_areas = torch.tensor(
+                self.surface_mesh["surface_mesh_areas"][self.sampling_indices]
+            ).to(self.device)
+            surface_normals = torch.tensor(
+                self.surface_mesh["surface_mesh_normals"][self.sampling_indices]
+            ).to(self.device)
 
-        drag_force = torch.sum(pressure[0, :, 0] * surface_normals[:, 0] * surface_areas - wall_shear[0, :, 0] * surface_areas)
-        lift_force = torch.sum(pressure[0, :, 0] * surface_normals[:, 2] * surface_areas - wall_shear[0, :, 2] * surface_areas)
+        drag_force = torch.sum(
+            pressure[0, :, 0] * surface_normals[:, 0] * surface_areas
+            - wall_shear[0, :, 0] * surface_areas
+        )
+        lift_force = torch.sum(
+            pressure[0, :, 0] * surface_normals[:, 2] * surface_areas
+            - wall_shear[0, :, 2] * surface_areas
+        )
 
         self.out_dict["drag_force"] = drag_force
         self.out_dict["lift_force"] = lift_force
-        
+
     @torch.inference_mode()
-    def compute_surface_solutions(self, num_sample_points=None, surface_mesh=None, plot_solutions=False, eval_batch_size=256_000):
+    def compute_surface_solutions(
+        self,
+        num_sample_points=None,
+        surface_mesh=None,
+        plot_solutions=False,
+        eval_batch_size=256_000,
+    ):
         total_time = 0.0
-        # start_event = torch.cuda.Event(device=device, enable_timing=True)
-        # end_event = torch.cuda.Event(device=device, enable_timing=True)
 
         geo_encoding = self.geometry_encoding_surface
-        j = 0
 
         if surface_mesh is not None:
             stl_coordinates = surface_mesh["surface_mesh_center_coordinates"]
@@ -881,7 +965,6 @@ class dominoInference():
             self.surface_mesh = None
 
         with autocast(enabled=True):
-            #start_event.record()
             start_time = time.time()
             (
                 surface_mesh_centers,
@@ -902,23 +985,22 @@ class dominoInference():
                 center_of_mass=self.center_of_mass,
                 stencil_size=self.stencil_size,
             )
-            #end_event.record()
             cur_time = time.time() - start_time
-            #end_event.synchronize()
-            #cur_time = start_event.elapsed_time(end_event) / 1000.0
             print(f"sample_points_in_surface time (s): {cur_time:.4f}")
 
             surface_coordinates_all = surface_mesh_centers
 
             inner_time = time.time()
-            #start_event.record()
-            start_time = time.time() 
+            # start_event.record()
+            start_time = time.time()
 
-            if num_sample_points == None:
+            if num_sample_points is None:
                 point_batch_size = eval_batch_size
                 num_points = surface_coordinates_all.shape[1]
                 subdomain_points = int(np.floor(num_points / point_batch_size))
-                surface_solutions = torch.zeros(1, num_points, self.num_surf_vars).to(self.device)
+                surface_solutions = torch.zeros(1, num_points, self.num_surf_vars).to(
+                    self.device
+                )
                 for p in range(subdomain_points + 1):
                     start_idx = p * point_batch_size
                     end_idx = (p + 1) * point_batch_size
@@ -928,21 +1010,23 @@ class dominoInference():
                         surface_neighbors[:, start_idx:end_idx],
                         surface_normals[:, start_idx:end_idx],
                         surface_neighbors_normals[:, start_idx:end_idx],
-                        surface_areas[:, start_idx:end_idx]+1e-9,
+                        surface_areas[:, start_idx:end_idx] + 1e-9,
                         surface_neighbors_areas[:, start_idx:end_idx],
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
                         inlet_velocity=self.stream_velocity,
                         air_density=self.air_density,
-                        pressure=self.pressure
+                        pressure=self.pressure,
                     )
-                    surface_solutions[:, start_idx:end_idx] = surface_solutions_batch                 
+                    surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
             else:
                 point_batch_size = eval_batch_size
                 num_points = num_sample_points
                 subdomain_points = int(np.floor(num_points / point_batch_size))
-                surface_solutions = torch.zeros(1, num_points, self.num_surf_vars).to(self.device)
+                surface_solutions = torch.zeros(1, num_points, self.num_surf_vars).to(
+                    self.device
+                )
                 for p in range(subdomain_points + 1):
                     start_idx = p * point_batch_size
                     end_idx = (p + 1) * point_batch_size
@@ -959,14 +1043,14 @@ class dominoInference():
                         self.model,
                         inlet_velocity=self.stream_velocity,
                         air_density=self.air_density,
-                        pressure=self.pressure
+                        pressure=self.pressure,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
 
-            #end_event.record()
+            # end_event.record()
             cur_time = time.time() - start_time
-            #end_event.synchronize()
-            #cur_time = start_event.elapsed_time(end_event) / 1000.0
+            # end_event.synchronize()
+            # cur_time = start_event.elapsed_time(end_event) / 1000.0
             print(f"compute_solution time (s): {cur_time:.4f}")
             total_time += float(time.time() - inner_time)
             surface_solutions_all = surface_solutions
@@ -977,38 +1061,45 @@ class dominoInference():
         cmax = surf_scaling_factors[0]
         cmin = surf_scaling_factors[1]
 
-        surface_coordinates_all = torch.reshape(surface_coordinates_all, 
-            (1, 
-            num_points, 
-            3
-            )
+        surface_coordinates_all = torch.reshape(
+            surface_coordinates_all, (1, num_points, 3)
         )
-        surface_solutions_all = torch.reshape(surface_solutions_all,
-            (1, 
-            num_points, 
-            4
-            )
-        )
+        surface_solutions_all = torch.reshape(surface_solutions_all, (1, num_points, 4))
 
         if self.surf_factors is not None:
-            surface_solutions_all = unnormalize(surface_solutions_all, self.surf_factors[0], self.surf_factors[1])
+            surface_solutions_all = unnormalize(
+                surface_solutions_all, self.surf_factors[0], self.surf_factors[1]
+            )
 
-        self.out_dict["surface_coordinates"] = 0.5 * (surface_coordinates_all + 1.0) * (cmax-cmin) + cmin
-        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, :1] * self.pressure
-        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:4] * self.pressure
+        self.out_dict["surface_coordinates"] = (
+            0.5 * (surface_coordinates_all + 1.0) * (cmax - cmin) + cmin
+        )
+        self.out_dict["pressure_surface"] = (
+            surface_solutions_all[:, :, :1] * self.pressure
+        )
+        self.out_dict["wall-shear-stress"] = (
+            surface_solutions_all[:, :, 1:4] * self.pressure
+        )
         self.sampling_indices = sampling_indices
 
     @torch.inference_mode()
-    def compute_volume_solutions(self, num_sample_points=None, point_cloud=None, plot_solutions=False, eval_batch_size=256_000):
-        if (num_sample_points is None and point_cloud is None) or (num_sample_points is not None and point_cloud is not None):
-            raise ValueError(f"Please provide either number of sampling points or a point cloud")
+    def compute_volume_solutions(
+        self,
+        num_sample_points=None,
+        point_cloud=None,
+        plot_solutions=False,
+        eval_batch_size=128_000,
+    ):
+        if (num_sample_points is None and point_cloud is None) or (
+            num_sample_points is not None and point_cloud is not None
+        ):
+            raise ValueError(
+                "Please provide either number of sampling points or a point cloud"
+            )
 
         total_time = 0.0
-        # start_event = torch.cuda.Event(device=device, enable_timing=True)
-        # end_event = torch.cuda.Event(device=device, enable_timing=True)
 
         geo_encoding = self.geometry_encoding
-        j = 0
 
         point_batch_size = eval_batch_size
 
@@ -1027,41 +1118,44 @@ class dominoInference():
             if end_idx > num_points:
                 point_batch_size = num_points - start_idx
                 end_idx = num_points
-        
+
             if point_cloud is not None:
                 point_cloud_sub = point_cloud[start_idx:end_idx]
-            #Compute volume
+            # Compute volume
             with autocast(enabled=True):
                 inner_time = time.time()
-                #start_event.record()
                 start_time = time.time()
                 if num_sample_points is not None:
-                    volume_mesh_centers, pos_normals_com, pos_normals_closest, sdf_nodes, scaling_factors = (
-                        self.ifp.sample_points_in_volume(
-                            num_points_vol=point_batch_size,
-                            max_min=self.bounding_box_min_max,
-                            center_of_mass=self.center_of_mass,
-                        )
+                    (
+                        volume_mesh_centers,
+                        pos_normals_com,
+                        pos_normals_closest,
+                        sdf_nodes,
+                        scaling_factors,
+                    ) = self.ifp.sample_points_in_volume(
+                        num_points_vol=point_batch_size,
+                        max_min=self.bounding_box_min_max,
+                        center_of_mass=self.center_of_mass,
                     )
                 else:
-                    volume_mesh_centers, pos_normals_com, pos_normals_closest, sdf_nodes, scaling_factors = (
-                        self.ifp.sample_points_in_volume(
-                            num_points_vol=None,
-                            point_cloud=point_cloud_sub,
-                            max_min=self.bounding_box_min_max,
-                            center_of_mass=self.center_of_mass,
-                        )
-
-                    )   
-                #end_event.record()
-                #end_event.synchronize()
+                    (
+                        volume_mesh_centers,
+                        pos_normals_com,
+                        pos_normals_closest,
+                        sdf_nodes,
+                        scaling_factors,
+                    ) = self.ifp.sample_points_in_volume(
+                        num_points_vol=None,
+                        point_cloud=point_cloud_sub,
+                        max_min=self.bounding_box_min_max,
+                        center_of_mass=self.center_of_mass,
+                    )
                 cur_time = time.time() - start_time
-                #cur_time = start_event.elapsed_time(end_event) / 1000.0
                 print(f"sample_points_in_volume time (s): {cur_time:.4f}")
 
                 volume_coordinates[:, start_idx:end_idx] = volume_mesh_centers
 
-                #start_event.record()
+                # start_event.record()
                 start_time = time.time()
                 volume_solutions_batch = self.compute_solution_in_volume(
                     geo_encoding,
@@ -1074,14 +1168,11 @@ class dominoInference():
                     use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
                     inlet_velocity=self.stream_velocity,
                     air_density=self.air_density,
-                    pressure=self.pressure
+                    pressure=self.pressure,
                 )
                 volume_solutions[:, start_idx:end_idx] = volume_solutions_batch
-                
-                #end_event.record()
-                #end_event.synchronize()
+
                 cur_time = time.time() - start_time
-                #cur_time = start_event.elapsed_time(end_event) / 1000.0
                 print(f"compute_solution time (s): {cur_time:.4f}")
                 total_time += float(time.time() - inner_time)
                 print(
@@ -1096,58 +1187,92 @@ class dominoInference():
         volume_coordinates_all = volume_coordinates
         volume_solutions_all = volume_solutions
 
-        volume_coordinates_all = torch.reshape(volume_coordinates_all, 
-            (1, 
-            num_points, 
-            3
-            )
+        volume_coordinates_all = torch.reshape(
+            volume_coordinates_all, (1, num_points, 3)
         )
-        volume_solutions_all = torch.reshape(volume_solutions_all,
-            (1, 
-            num_points, 
-            self.num_vol_vars
-            )
+        volume_solutions_all = torch.reshape(
+            volume_solutions_all, (1, num_points, self.num_vol_vars)
         )
 
-        # print("Norm:", torch.amax(volume_solutions_all, (0, 1)), torch.amin(volume_solutions_all, (0, 1)))
         if self.vol_factors is not None:
-            volume_solutions_all = unnormalize(volume_solutions_all, self.vol_factors[0], self.vol_factors[1])
-        # print("UnNorm:", torch.amax(volume_solutions_all, (0, 1)), torch.amin(volume_solutions_all, (0, 1)))
-        self.out_dict["coordinates"] = 0.5 * (volume_coordinates_all + 1.0) * (cmax-cmin) + cmin
+            volume_solutions_all = unnormalize(
+                volume_solutions_all, self.vol_factors[0], self.vol_factors[1]
+            )
+        self.out_dict["coordinates"] = (
+            0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
+        )
+
         self.out_dict["pressure"] = volume_solutions_all[:, :, 0:1] * self.pressure
-        self.out_dict["velocity"] = volume_solutions_all[:, :, 1:4] * self.stream_velocity
-        # self.out_dict["turbulent-kinetic-energy"] = volume_solutions_all[:, :, 4:5] * self.stream_velocity**2.0 * self.air_density
-        # self.out_dict["turbulent-viscosity"] = volume_solutions_all[:, :, 5:] * self.stream_velocity  * self.length_scale
-        
+        self.out_dict["velocity"] = (
+            volume_solutions_all[:, :, 1:4] * self.stream_velocity
+        )
+        self.out_dict["turbulent-kinetic-energy"] = self.out_dict["pressure"]
+        self.out_dict["turbulent-viscosity"] = self.out_dict["pressure"]
+
         if plot_solutions:
             print("Plotting solutions")
             plot_save_path = os.path.join(self.cfg.output, "plots/contours/")
             create_directory(plot_save_path)
-            
-            p_grid = 0.5 * (self.grid + 1.0) * (cmax-cmin) + cmin
+
+            p_grid = 0.5 * (self.grid + 1.0) * (cmax - cmin) + cmin
             p_grid = p_grid.cpu().numpy()
             sdf_grid = self.sdf_grid.cpu().numpy()
-            volume_coordinates_all = 0.5 * (volume_coordinates_all + 1.0) * (cmax-cmin) + cmin
-            volume_solutions_all[:, :, :1] = volume_solutions_all[:, :, :3] * self.stream_velocity
-            volume_solutions_all[:, :, 1:] = volume_solutions_all[:, :, 3:4] * self.stream_velocity**2.0 * self.air_density
-            # volume_solutions_all[:, :, 4:5] = volume_solutions_all[:, :, 4:5] * self.stream_velocity**2.0 * self.air_density
-            # volume_solutions_all[:, :, 5] = volume_solutions_all[:, :, 5] * self.stream_velocity * self.length_scale
+            volume_coordinates_all = (
+                0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
+            )
+            volume_solutions_all[:, :, :1] = (
+                volume_solutions_all[:, :, :3] * self.stream_velocity
+            )
+            volume_solutions_all[:, :, 1:] = (
+                volume_solutions_all[:, :, 3:4]
+                * self.stream_velocity**2.0
+                * self.air_density
+            )
+           
             volume_coordinates_all = volume_coordinates_all.cpu().numpy()
             volume_solutions_all = volume_solutions_all.cpu().numpy()
-            
+
             # ND interpolation on a grid
-            prediction_grid = nd_interpolator(volume_coordinates_all, volume_solutions_all[0], p_grid[0])
+            prediction_grid = nd_interpolator(
+                volume_coordinates_all, volume_solutions_all[0], p_grid[0]
+            )
             nx, ny, nz, vars = prediction_grid.shape
             idx = np.where(sdf_grid[0] < 0.0)
             prediction_grid[idx] = float("inf")
             axes_titles = ["y/4 plane", "y/2 plane"]
 
-            plot(prediction_grid[:, int(ny/4), :, 0], prediction_grid[:, int(ny/2), :, 0], var="x-vel", save_path=plot_save_path+f"x-vel-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
-            plot(prediction_grid[:, int(ny/4), :, 1], prediction_grid[:, int(ny/2), :, 1], var="y-vel", save_path=plot_save_path+f"y-vel-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
-            plot(prediction_grid[:, int(ny/4), :, 2], prediction_grid[:, int(ny/2), :, 2], var="z-vel", save_path=plot_save_path+f"z-vel-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
-            plot(prediction_grid[:, int(ny/4), :, 3], prediction_grid[:, int(ny/2), :, 3], var="pres", save_path=plot_save_path+f"pres-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
-            # plot(prediction_grid[:, int(ny/4), :, 4], prediction_grid[:, int(ny/2), :, 4], var="tke", save_path=plot_save_path+f"tke-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
-            # plot(prediction_grid[:, int(ny/4), :, 5], prediction_grid[:, int(ny/2), :, 5], var="nut", save_path=plot_save_path+f"nut-midplane_{self.stream_velocity}.png", axes_titles=axes_titles, plot_error=False)
+            plot(
+                prediction_grid[:, int(ny / 4), :, 0],
+                prediction_grid[:, int(ny / 2), :, 0],
+                var="x-vel",
+                save_path=plot_save_path + f"x-vel-midplane_{self.stream_velocity}.png",
+                axes_titles=axes_titles,
+                plot_error=False,
+            )
+            plot(
+                prediction_grid[:, int(ny / 4), :, 1],
+                prediction_grid[:, int(ny / 2), :, 1],
+                var="y-vel",
+                save_path=plot_save_path + f"y-vel-midplane_{self.stream_velocity}.png",
+                axes_titles=axes_titles,
+                plot_error=False,
+            )
+            plot(
+                prediction_grid[:, int(ny / 4), :, 2],
+                prediction_grid[:, int(ny / 2), :, 2],
+                var="z-vel",
+                save_path=plot_save_path + f"z-vel-midplane_{self.stream_velocity}.png",
+                axes_titles=axes_titles,
+                plot_error=False,
+            )
+            plot(
+                prediction_grid[:, int(ny / 4), :, 3],
+                prediction_grid[:, int(ny / 2), :, 3],
+                var="pres",
+                save_path=plot_save_path + f"pres-midplane_{self.stream_velocity}.png",
+                axes_titles=axes_titles,
+                plot_error=False,
+            )
 
     def cold_start(self, cached_geom_path=None):
         print("Cold start")
@@ -1157,15 +1282,8 @@ class dominoInference():
 
     @torch.no_grad()
     def calculate_geometry_encoding(
-        self, 
-        geo_centers, 
-        p_grid, 
-        sdf_grid, 
-        s_grid,
-        sdf_surf_grid,
-        model
-        ):
-
+        self, geo_centers, p_grid, sdf_grid, s_grid, sdf_surf_grid, model
+    ):
         vol_min = self.bounding_box_min_max[0]
         vol_max = self.bounding_box_min_max[1]
         surf_min = self.bounding_box_surface_min_max[0]
@@ -1175,14 +1293,16 @@ class dominoInference():
         if self.world_size == 1:
             encoding_g_vol = model.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
         else:
-            encoding_g_vol = model.module.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
+            encoding_g_vol = model.module.geo_rep_volume(
+                geo_centers_vol, p_grid, sdf_grid
+            )
 
-        geo_centers_surf = (
-            2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
-        )
+        geo_centers_surf = 2.0 * (geo_centers - surf_min) / (surf_max - surf_min) - 1
 
         if self.world_size == 1:
-            encoding_g_surf = model.geo_rep_surface(geo_centers_surf, s_grid, sdf_surf_grid)
+            encoding_g_surf = model.geo_rep_surface(
+                geo_centers_surf, s_grid, sdf_surf_grid
+            )
         else:
             encoding_g_surf = model.module.geo_rep_surface(
                 geo_centers_surf, s_grid, sdf_surf_grid
@@ -1206,7 +1326,7 @@ class dominoInference():
 
         # geo_encoding = 0.5 * encoding_g_surf1 + 0.5 * encoding_g_vol
         # geo_encoding_surface = 0.5 * encoding_g_surf
-        
+
         return 0.5 * encoding_g_vol, 0.5 * encoding_g_surf
 
     @torch.no_grad()
@@ -1224,9 +1344,8 @@ class dominoInference():
         model,
         inlet_velocity,
         air_density,
-        pressure
+        pressure,
     ):
-
         global_params_values = torch.cat(
             (inlet_velocity, air_density, pressure), axis=1
         )  # (1, 3)
@@ -1263,7 +1382,7 @@ class dominoInference():
                 surface_areas,
                 surface_neighbors_areas,
                 global_params_values,
-                global_params_reference
+                global_params_reference,
             )
         else:
             pos_encoding = model.module.position_encoder(
@@ -1279,7 +1398,7 @@ class dominoInference():
                 surface_areas,
                 surface_neighbors_areas,
                 global_params_values,
-                global_params_reference
+                global_params_reference,
             )
 
         return tpredictions_batch
@@ -1297,14 +1416,13 @@ class dominoInference():
         use_sdf_basis,
         inlet_velocity,
         air_density,
-        pressure
+        pressure,
     ):
-
         ## Global parameters
         global_params_values = torch.cat(
             (inlet_velocity, air_density, pressure), axis=1
         )  # (1, 3)
-        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 2, 1)
+        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 3, 1)
 
         global_params_reference = torch.cat(
             (inlet_velocity, air_density, pressure), axis=1
@@ -1321,7 +1439,6 @@ class dominoInference():
             geo_encoding_local = model.module.geo_encoding_local(
                 geo_encoding, volume_mesh_centers, p_grid, mode="volume"
             )
-
         if use_sdf_basis:
             pos_encoding = torch.cat(
                 (sdf_nodes, pos_enc_closest, pos_normals_com), axis=-1
@@ -1331,13 +1448,6 @@ class dominoInference():
 
         if self.world_size == 1:
             pos_encoding = model.position_encoder(pos_encoding, eval_mode="volume")
-            print("\n--- DEBUG INFO ---")
-            print(f"volume_mesh_centers    | shape: {volume_mesh_centers.shape} | min: {volume_mesh_centers.min():.6f} | max: {volume_mesh_centers.max():.6f}")
-            print(f"geo_encoding_local     | shape: {geo_encoding_local.shape} | min: {geo_encoding_local.min():.6f} | max: {geo_encoding_local.max():.6f}")
-            print(f"pos_encoding           | shape: {pos_encoding.shape} | min: {pos_encoding.min():.6f} | max: {pos_encoding.max():.6f}")
-            print(f"global_params_values   | shape: {global_params_values.shape} | min: {global_params_values.min():.6f} | max: {global_params_values.max():.6f}")
-            print(f"global_params_reference | shape: {global_params_reference.shape} | min: {global_params_reference.min():.6f} | max: {global_params_reference.max():.6f}")
-            print("--- END DEBUG ---\n")
             tpredictions_batch = model.calculate_solution(
                 volume_mesh_centers,
                 geo_encoding_local,
@@ -1391,14 +1501,10 @@ if __name__ == "__main__":
         vtu_path = os.path.join(dir_path, "merged_volumes.vtu")
 
         STREAM_VELOCITY = 148.25
-        AIR_DENSITY = 0.38
-        PRESSURE = 23840.0
         STENCIL_SIZE = 20 # 20 is default value in test.py
 
         domino.set_stl_path(stl_filepath)
         domino.set_stream_velocity(STREAM_VELOCITY)
-        domino.set_air_density(AIR_DENSITY)
-        domino.set_pressure(PRESSURE)
         domino.set_stencil_size(STENCIL_SIZE)
 
         # # Get the unstructured grid data for VTU output
