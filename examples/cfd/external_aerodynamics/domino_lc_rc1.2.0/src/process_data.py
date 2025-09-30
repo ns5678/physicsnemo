@@ -16,18 +16,22 @@
 
 """
 This code runs the data processing in parallel to load OpenFoam files, process them 
-and save in the npy format for faster processing in the DoMINO datapipes. Several 
+and save in the npy or zarr format for faster processing in the DoMINO datapipes. Several 
 parameters such as number of processors, input and output paths, etc. can be 
 configured in config.yaml in the data_processing tab.
 """
 
 import os
-from openfoam_datapipe import OpenFoamDataset
-from physicsnemo.utils.domino.utils import *
 import multiprocessing
-import hydra, time
+import hydra
+import time
+from pathlib import Path
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
+
+from openfoam_datapipe import OpenFoamDataset
+from physicsnemo.utils.domino.utils import *
+from zarr_utils import convert_to_zarr_format, write_zarr_file
 
 
 def process_files(*args_list):
@@ -35,6 +39,9 @@ def process_files(*args_list):
     processor_id = args_list[1]
     fm_data = args_list[2]
     output_dir = args_list[3]
+    serialization_method = args_list[4]
+    zarr_options = args_list[5] if len(args_list) > 5 else {}
+    
     for j in ids:
         fname = fm_data.filenames[j]
         if len(os.listdir(os.path.join(fm_data.data_path, fname))) == 0:
@@ -42,13 +49,56 @@ def process_files(*args_list):
             continue
         outname = os.path.join(output_dir, fname)
         print("Filename:%s on processor: %d" % (outname, processor_id))
-        filename = f"{outname}.npy"
-        if os.path.exists(filename):
-            print(f"Skipping {filename} - already exists.")
-            continue
+        
+        # Check if file already exists based on serialization method
+        if serialization_method == "zarr":
+            output_path = Path(f"{outname}.zarr")
+            overwrite = zarr_options.get("overwrite_existing", True)
+            if output_path.exists() and not overwrite:
+                print(f"Skipping {fname} - zarr store already exists.")
+                continue
+        else:  # numpy
+            filename = f"{outname}.npy"
+            if os.path.exists(filename):
+                print(f"Skipping {filename} - already exists.")
+                continue
+        
         start_time = time.time()
-        data_dict = fm_data[j]
-        np.save(filename, data_dict)
+        data = fm_data[j]  # Returns OpenFoamDataInMemory object
+        
+        # Save based on serialization method
+        if serialization_method == "zarr":
+            # Convert to zarr format
+            chunk_size_mb = zarr_options.get("chunk_size_mb", 1.0)
+            compression_level = zarr_options.get("compression_level", 5)
+            compression_method = zarr_options.get("compression_method", "zstd")
+            zarr_data = convert_to_zarr_format(
+                data,
+                chunk_size_mb=chunk_size_mb,
+                compression_level=compression_level,
+                compression_method=compression_method,
+            )
+            # Write zarr file
+            write_zarr_file(zarr_data, output_path, overwrite=overwrite)
+        else:  # numpy (default)
+            # Convert to dictionary for backward compatibility with existing numpy format
+            data_dict = {
+                "stl_coordinates": data.stl_coordinates,
+                "stl_centers": data.stl_centers,
+                "stl_faces": data.stl_faces,
+                "stl_areas": data.stl_areas,
+                "surface_mesh_centers": data.surface_mesh_centers,
+                "surface_normals": data.surface_normals,
+                "surface_areas": data.surface_areas,
+                "volume_fields": data.volume_fields,
+                "volume_mesh_centers": data.volume_mesh_centers,
+                "surface_fields": data.surface_fields,
+                "filename": data.metadata.filename,
+                "global_params_values": data.metadata.global_params_values,
+                "global_params_reference": data.metadata.global_params_reference,
+            }
+            np.save(filename, data_dict)
+        
         print("Time taken for %d = %f" % (j, time.time() - start_time))
 
 
@@ -90,6 +140,17 @@ def main(cfg: DictConfig):
     output_dir = cfg.data_processor.output_dir
     create_directory(output_dir)
     n_processors = cfg.data_processor.num_processors
+    
+    # Get serialization method and options from config (data_processor section)
+    serialization_method = cfg.data_processor.get("serialization_method", "numpy")
+    zarr_options = cfg.data_processor.get("zarr_options", {})
+    
+    print(f"Using serialization method: {serialization_method}")
+    if serialization_method == "zarr":
+        print(f"Zarr options: compression_method={zarr_options.get('compression_method', 'zstd')}, "
+              f"compression_level={zarr_options.get('compression_level', 5)}, "
+              f"chunk_size_mb={zarr_options.get('chunk_size_mb', 1.0)}, "
+              f"overwrite_existing={zarr_options.get('overwrite_existing', True)}")
 
     num_files = len(fm_data)
     ids = np.arange(num_files)
@@ -102,7 +163,10 @@ def main(cfg: DictConfig):
         else:
             sf = ids[i * num_elements :]
         # print(sf)
-        process = ctx.Process(target=process_files, args=(sf, i, fm_data, output_dir))
+        process = ctx.Process(
+            target=process_files,
+            args=(sf, i, fm_data, output_dir, serialization_method, zarr_options),
+        )
 
         process.start()
         process_list.append(process)

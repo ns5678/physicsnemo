@@ -16,7 +16,7 @@
 
 """
 This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
-in npy format. 
+in npy or zarr format. 
 
 """
 
@@ -31,6 +31,8 @@ import pyvista as pv
 import vtk
 from physicsnemo.utils.domino.utils import *
 from torch.utils.data import Dataset
+
+from schemas import OpenFoamDataInMemory, OpenFoamMetadata
 
 # AIR_DENSITY = 1.205
 # STREAM_VELOCITY = 30.00
@@ -278,22 +280,27 @@ class OpenFoamDataset(Dataset):
         print('global_params_values:', global_params_values)
         print('global_params_reference:', global_params_reference)
         
-        # Add the parameters to the dictionary
-        return {
-            "stl_coordinates": np.float32(stl_vertices),
-            "stl_centers": np.float32(stl_centers),
-            "stl_faces": np.float32(mesh_indices_flattened),
-            "stl_areas": np.float32(stl_sizes),
-            "surface_mesh_centers": np.float32(surface_coordinates),
-            "surface_normals": np.float32(surface_normals),
-            "surface_areas": np.float32(surface_sizes),
-            "volume_fields": np.float32(volume_fields),
-            "volume_mesh_centers": np.float32(volume_coordinates),
-            "surface_fields": np.float32(surface_fields),
-            "filename": cfd_filename,
-            "global_params_values": global_params_values,
-            "global_params_reference": global_params_reference,
-        }
+        # Create metadata
+        metadata = OpenFoamMetadata(
+            filename=cfd_filename,
+            global_params_values=global_params_values,
+            global_params_reference=global_params_reference,
+        )
+
+        # Return structured data
+        return OpenFoamDataInMemory(
+            metadata=metadata,
+            stl_coordinates=np.float32(stl_vertices),
+            stl_centers=np.float32(stl_centers),
+            stl_faces=np.float32(mesh_indices_flattened),
+            stl_areas=np.float32(stl_sizes),
+            surface_mesh_centers=np.float32(surface_coordinates),
+            surface_normals=np.float32(surface_normals),
+            surface_areas=np.float32(surface_sizes),
+            volume_fields=np.float32(volume_fields),
+            volume_mesh_centers=np.float32(volume_coordinates),
+            surface_fields=np.float32(surface_fields),
+        )
 
 
 if __name__ == "__main__":

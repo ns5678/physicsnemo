@@ -550,6 +550,10 @@ def main(cfg: DictConfig) -> None:
 
     gpu_handle = nvmlDeviceGetHandleByIndex(dist.device.index)
 
+    # Create output directory for scaling factors before computing them
+    scaling_factors_dir = os.path.join("outputs", cfg.project.name)
+    create_directory(scaling_factors_dir)
+
     compute_scaling_factors(
         cfg=cfg,
         input_path=cfg.data.input_dir,
