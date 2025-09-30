@@ -1,16 +1,16 @@
 project:
-  name: LC_Dataset_No_Integral_Loss_Full_Data_Numpy
+  name: LC_Dataset_No_Integral_Loss_Full_Data_Zarr
 exp_tag: 1
 project_dir: outputs/${project.name}/
 output: outputs/${project.name}/${exp_tag}
 resume_dir: ${output}/models
 data_processor:
   kind: lc_data
-  output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/unoptimized/train
+  output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
   input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
-  num_processors: 8
+  num_processors: 12
   # Serialization options
   serialization_method: zarr  # Options: 'numpy' or 'zarr'
   # Zarr-specific options (only used when serialization_method is 'zarr')
@@ -40,8 +40,8 @@ variables:
       type: scalar
       reference: 23840.0
 data:
-  input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/unoptimized/train
-  input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/unoptimized/test
+  input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
+  input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/test
   bounding_box:
     min:
     - -5.0

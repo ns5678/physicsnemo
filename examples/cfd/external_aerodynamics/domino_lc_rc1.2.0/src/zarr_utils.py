@@ -154,11 +154,32 @@ def write_zarr_file(
 
     # Write metadata as attributes
     metadata_dict = asdict(data.metadata)
-    # Convert numpy arrays in metadata to lists for JSON serialization
-    for key, value in metadata_dict.items():
-        if isinstance(value, np.ndarray):
-            metadata_dict[key] = value.tolist()
+    
+    # Extract numpy arrays from metadata to store as datasets instead of attributes
+    global_params_values = metadata_dict.pop('global_params_values', None)
+    global_params_reference = metadata_dict.pop('global_params_reference', None)
+    
+    # Store remaining metadata as attributes (only scalar values like filename)
     root.attrs.update(metadata_dict)
+    
+    # Store global params as zarr arrays (not metadata) with no compression
+    # They're tiny (1x3) so compression is unnecessary and this ensures they're
+    # read correctly by domino_datapipe.py
+    if global_params_values is not None:
+        root.create_dataset(
+            'global_params_values',
+            data=global_params_values,
+            dtype=np.float32,
+            compressor=None  # No compression for small arrays
+        )
+    
+    if global_params_reference is not None:
+        root.create_dataset(
+            'global_params_reference', 
+            data=global_params_reference,
+            dtype=np.float32,
+            compressor=None  # No compression for small arrays
+        )
 
     # Write required arrays
     for field in ["stl_coordinates", "stl_centers", "stl_faces", "stl_areas"]:
@@ -188,4 +209,7 @@ def write_zarr_file(
                 chunks=array_info.chunks,
                 compressor=array_info.compressor,
             )
+    
+    # Explicitly sync the store to ensure all data is written to disk
+    zarr_store.close()
 
