@@ -6,12 +6,12 @@ output: outputs/${project.name}/${exp_tag}
 resume_dir: ${output}/models
 data_processor:
   kind: lc_data
-  output_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
+  output_dir: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
   input_dir: /lustre/datasets/lc_shift_aero/shift_wing_samples/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 12
-  serialization_method: zarr  # Options: 'numpy' or 'zarr'
+  serialization_method: numpy  # Options: 'numpy' or 'zarr'
   zarr_options:
     compression_method: zstd  # Compression algorithm (matches curator default)
     compression_level: 5  # Compression level (1-9, higher = more compression)
@@ -38,8 +38,8 @@ variables:
       type: scalar
       reference: 23840.0
 data:
-  input_dir: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
-  input_dir_val: /lustre/snidhan/gtc-dc-demo-2025/lc-data/zarred/test
+  input_dir: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/zarred/train
+  input_dir_val: /lustre/users/snidhan/gtc-dc-demo-2025/lc-data/zarred/test
   bounding_box:
     min:
     - -5.0
