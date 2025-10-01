@@ -11,9 +11,7 @@ data_processor:
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 12
-  # Serialization options
   serialization_method: zarr  # Options: 'numpy' or 'zarr'
-  # Zarr-specific options (only used when serialization_method is 'zarr')
   zarr_options:
     compression_method: zstd  # Compression algorithm (matches curator default)
     compression_level: 5  # Compression level (1-9, higher = more compression)

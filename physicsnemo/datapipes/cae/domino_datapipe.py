@@ -422,10 +422,16 @@ class DoMINODataPipe(Dataset):
             for key in data.keys():
                 data[key] = self.array_provider.asarray(data[key])
 
-            # Optional, maybe-present keys
+            # Optional, maybe-present keys - try to read from zarr store first
             for key in self.keys_to_read_if_available:
                 if key not in data.keys():
-                    data[key] = self.keys_to_read_if_available[key]
+                    # Try to read from zarr store if present
+                    if key in z.keys():
+                        data[key] = np.array(z[key])
+                        data[key] = self.array_provider.asarray(data[key])
+                    else:
+                        # Fall back to default value
+                        data[key] = self.keys_to_read_if_available[key]
 
         return data
 
