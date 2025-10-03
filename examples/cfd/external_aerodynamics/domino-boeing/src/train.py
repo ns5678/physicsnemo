@@ -805,24 +805,25 @@ def main(cfg: DictConfig) -> None:
         )
         epoch_end_time = time.perf_counter()
 
-        model.eval()
-        avg_vloss = validation_step(
-            dataloader=val_dataloader,
-            model=model,
-            device=dist.device,
-            logger=logger,
-            use_sdf_basis=cfg.model.use_sdf_in_basis_func,
-            use_surface_normals=cfg.model.use_surface_normals,
-            integral_scaling_factor=initial_integral_factor,
-            loss_fn_type=cfg.model.loss_function,
-            vol_loss_scaling=cfg.model.vol_loss_scaling,
-            surf_loss_scaling=surface_scaling_loss,
-            first_deriv=first_deriv,
-            eqn=eqn,
-            bounding_box=bounding_box,
-            vol_factors=vol_factors_tensor,
-            add_physics_loss=add_physics_loss,
-        )
+        avg_vloss = 0
+        # model.eval()
+        # avg_vloss = validation_step(
+        #     dataloader=val_dataloader,
+        #     model=model,
+        #     device=dist.device,
+        #     logger=logger,
+        #     use_sdf_basis=cfg.model.use_sdf_in_basis_func,
+        #     use_surface_normals=cfg.model.use_surface_normals,
+        #     integral_scaling_factor=initial_integral_factor,
+        #     loss_fn_type=cfg.model.loss_function,
+        #     vol_loss_scaling=cfg.model.vol_loss_scaling,
+        #     surf_loss_scaling=surface_scaling_loss,
+        #     first_deriv=first_deriv,
+        #     eqn=eqn,
+        #     bounding_box=bounding_box,
+        #     vol_factors=vol_factors_tensor,
+        #     add_physics_loss=add_physics_loss,
+        # )
 
         scheduler.step()
         logger.info(
