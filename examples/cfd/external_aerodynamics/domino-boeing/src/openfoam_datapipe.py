@@ -113,15 +113,13 @@ class OpenFoamDataset(Dataset):
         cfd_filename = self.filenames[idx]
         car_dir = self.data_path / cfd_filename
 
-        ## Extract AoA from volume filename
-        volume_filepath = self.path_getter.volume_path(car_dir)
-        volume_filename = volume_filepath.name  # e.g., "volume_geo_F10_AoA_4.vtu"
-        # Parse AoA from filename (format: "..._AoA_X.vtu")
-        aoa_match = re.search(r'AoA_(\d+(?:\.\d+)?)', volume_filename)
+        ## Extract AoA from folder name
+        # Parse AoA from folder name (format: "geo_LHC001_AoA_12")
+        aoa_match = re.search(r'AoA_(\d+(?:\.\d+)?)', cfd_filename)
         if aoa_match:
             sample_AoA = np.float32(aoa_match.group(1))
         else:
-            raise ValueError(f"Could not extract AoA from volume filename: {volume_filename}")
+            raise ValueError(f"Could not extract AoA from folder name: {cfd_filename}")
 
         ## Read geometry STL file used for simulation (not same as surface mesh)
         stl_path = self.path_getter.geometry_path(car_dir)
