@@ -53,13 +53,10 @@ variables:
   surface:
     solution:
       PROJ(AVG(P)): scalar
-      PROJ(AVG(TAU_WALL(0))): scalar
-      PROJ(AVG(TAU_WALL(1))): scalar
-      PROJ(AVG(TAU_WALL(2))): scalar
+      AVG(TAU_WALL(2)): scalar
   volume:
     solution:
       avg(P): scalar
-      avg(rho): scalar
       avg(u): vector
   global_parameters:
     AoA:
@@ -74,11 +71,11 @@ data:
   input_dir: /lustre/users/snidhan/gen-data/
   input_dir_val: /lustre/users/snidhan/gen-data/
   bounding_box: # Bounding box dimensions for shift wing volume
-    min: [-500.0, 0.0, -500.0]
-    max: [5000.0, 1500.0, 1500.0]
+    min: [0.0, 0.0, -250.0]
+    max: [3500.0, 1500.0, 1500.0]
   bounding_box_surface: # Bounding box dimensions for shift wing surface
-    min: [92.4, 0.0, 17.6]
-    max: [2626.0, 1159.95, 728.5]
+    min: [87.78, 0.0, 16.0]
+    max: [2800.0, 1218.0, 765.45]
   gpu_preprocessing: true
   gpu_output: true
 
@@ -94,7 +91,7 @@ domain_parallelism:
 # │          Model Parameters                 │
 # └───────────────────────────────────────────┘  
 model:
-  model_type: volume # train which model? surface, volume, combined
+  model_type: combined # train which model? surface, volume, combined
   activation: "relu" # "relu" or "gelu"
   loss_function: 
     loss_type: "mse" # mse or rmse
@@ -105,11 +102,11 @@ model:
   volume_points_sample: 300_000 # Number of points to sample in volume per epoch
   surface_points_sample: 300_000 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
-  geom_points_sample: 1_000_000 # Number of points to sample on STL per epoch
+  geom_points_sample: 200_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
   num_neighbors_volume: 10 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
-  return_volume_neighbors: true # Whether to return volume neighbors or not
+  return_volume_neighbors: false # Whether to return volume neighbors or not
   use_surface_normals: true # Use surface normals and surface areas for surface computation?
   use_surface_area: true # Use only surface normals and not surface area
   integral_loss_scaling_factor: 100 # Scale integral loss by this factor
@@ -160,8 +157,8 @@ model:
   geometry_local: # Hyperparameters for local geometry extraction
     volume_neighbors_in_radius: [64] # Number of radius points
     surface_neighbors_in_radius: [64] # Number of radius points
-    volume_radii: [0.25] # Volume radii
-    surface_radii: [0.25] # Surface radii
+    volume_radii: [0.10] # Volume radii
+    surface_radii: [0.10] # Surface radii
     base_layer: 512
   parameter_model:
     base_layer: 512

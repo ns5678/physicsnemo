@@ -125,140 +125,25 @@ def loss_fn_surface(
     Returns:
         Combined scalar and vector loss as a scalar tensor
     """
-    # Separate the scalar and vector components:
-    output_scalar, output_vector = torch.split(output, [1, 3], dim=2)
-    target_scalar, target_vector = torch.split(target, [1, 3], dim=2)
+    # Separate the pressure and shear components in config
+    output_pressure, output_shear = output[:, :, 0], output[:, :, 1]
+    target_pressure, target_shear = target[:, :, 0], target[:, :, 1]
 
-    numerator = torch.mean((output_scalar - target_scalar) ** 2.0)
-    vector_diff_sq = torch.mean((target_vector - output_vector) ** 2.0, (0, 1))
+    pressure_diff_sq = torch.mean((output_pressure - target_pressure) ** 2.0)
+    
+    shear_diff_sq = torch.mean((target_shear - output_shear) ** 2.0)
     if loss_type == "mse":
-        masked_loss_pres = numerator
-        masked_loss_ws = torch.sum(vector_diff_sq)
+        masked_loss_pres = pressure_diff_sq
+        masked_loss_ws = shear_diff_sq
     else:
-        denom = torch.mean((target_scalar) ** 2.0)
-        masked_loss_pres = numerator / denom
-
-        # Compute the mean diff**2 of the vector component, leave the last dimension:
-        masked_loss_ws_num = vector_diff_sq
-        masked_loss_ws_denom = torch.mean((target_vector) ** 2.0, (0, 1))
-        masked_loss_ws = torch.sum(masked_loss_ws_num / masked_loss_ws_denom)
+        pressure_denom = torch.mean((target_pressure) ** 2.0)
+        masked_loss_pres = pressure_diff_sq/ pressure_denom
+        ws_denom = torch.mean((target_shear) ** 2.0)
+        masked_loss_ws = shear_diff_sq/ ws_denom
 
     loss = masked_loss_pres + masked_loss_ws
 
-    return loss / 4.0
-
-
-def loss_fn_area(
-    output: torch.Tensor,
-    target: torch.Tensor,
-    normals: torch.Tensor,
-    area: torch.Tensor,
-    area_scaling_factor: float,
-    loss_type: Literal["mse", "rmse"],
-) -> torch.Tensor:
-    """Calculate area-weighted loss for surface data considering normal vectors.
-
-    Args:
-        output: Predicted surface values from the model
-        target: Ground truth surface values
-        normals: Normal vectors for the surface
-        area: Area values for surface elements
-        area_scaling_factor: Scaling factor for area weighting
-        loss_type: Type of loss to calculate ("mse" or "rmse")
-
-    Returns:
-        Area-weighted loss as a scalar tensor
-    """
-    area = area * area_scaling_factor
-    area_scale_factor = area
-
-    # Separate the scalar and vector components.
-    target_scalar, target_vector = torch.split(
-        target * area_scale_factor, [1, 3], dim=2
-    )
-    output_scalar, output_vector = torch.split(
-        output * area_scale_factor, [1, 3], dim=2
-    )
-
-    # Apply the normals to the scalar components (only [:,:,0]):
-    normals, _ = torch.split(normals, [1, normals.shape[-1] - 1], dim=2)
-    target_scalar = target_scalar * normals
-    output_scalar = output_scalar * normals
-
-    # Compute the mean diff**2 of the scalar component:
-    masked_loss_pres = torch.mean(((output_scalar - target_scalar) ** 2.0), dim=(0, 1))
-    if loss_type == "rmse":
-        masked_loss_pres /= torch.mean(target_scalar**2.0, dim=(0, 1))
-
-    # Compute the mean diff**2 of the vector component, leave the last dimension:
-    masked_loss_ws = torch.mean((target_vector - output_vector) ** 2.0, (0, 1))
-
-    if loss_type == "rmse":
-        masked_loss_ws /= torch.mean((target_vector) ** 2.0, (0, 1))
-
-    # Combine the scalar and vector components:
-    loss = 0.25 * (masked_loss_pres + torch.sum(masked_loss_ws))
-
-    return loss
-
-
-def integral_loss_fn(
-    output, target, area, normals, stream_velocity=None, padded_value=-10
-):
-    drag_loss = drag_loss_fn(
-        output, target, area, normals, stream_velocity=stream_velocity, padded_value=-10
-    )
-    lift_loss = lift_loss_fn(
-        output, target, area, normals, stream_velocity=stream_velocity, padded_value=-10
-    )
-    return lift_loss + drag_loss
-
-
-def lift_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    normals = torch.select(normals, 2, 2)
-    # output_true_0 = output_true[:, :, 0]
-    output_true_0 = output_true.select(2, 0)
-    output_pred_0 = output_pred.select(2, 0)
-
-    pres_true = output_true_0 * normals
-    pres_pred = output_pred_0 * normals
-
-    wz_true = output_true[:, :, -1]
-    wz_pred = output_pred[:, :, -1]
-
-    masked_pred = torch.mean(pres_pred + wz_pred, (1))
-    masked_truth = torch.mean(pres_true + wz_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
-
-
-def drag_loss_fn(output, target, area, normals, stream_velocity=None, padded_value=-10):
-    vel_inlet = stream_velocity  # Get this from the dataset
-    mask = abs(target - padded_value) > 1e-3
-    output_true = target * mask * area * (vel_inlet) ** 2.0
-    output_pred = output * mask * area * (vel_inlet) ** 2.0
-
-    pres_true = output_true[:, :, 0] * normals[:, :, 0]
-    pres_pred = output_pred[:, :, 0] * normals[:, :, 0]
-
-    wx_true = output_true[:, :, 1]
-    wx_pred = output_pred[:, :, 1]
-
-    masked_pred = torch.mean(pres_pred + wx_pred, (1))
-    masked_truth = torch.mean(pres_true + wx_true, (1))
-
-    loss = (masked_pred - masked_truth) ** 2.0
-    loss = torch.mean(loss)
-    return loss
-
+    return loss / 2.0
 
 def compute_loss_dict(
     prediction_vol: torch.Tensor,
@@ -293,84 +178,29 @@ def compute_loss_dict(
 
     if prediction_vol is not None:
         target_vol = batch_inputs["volume_fields"]
-
-        if add_physics_loss:
-            loss_vol = loss_fn_with_physics(
-                prediction_vol,
-                target_vol,
-                loss_fn_type.loss_type,
-                padded_value=-10,
-                first_deriv=first_deriv,
-                eqn=eqn,
-                bounding_box=bounding_box,
-                vol_factors=vol_factors,
-            )
-            loss_dict["loss_vol"] = loss_vol[0]
-            loss_dict["loss_continuity"] = loss_vol[1]
-            loss_dict["loss_momentum_x"] = loss_vol[2]
-            loss_dict["loss_momentum_y"] = loss_vol[3]
-            loss_dict["loss_momentum_z"] = loss_vol[4]
-            total_loss_terms.append(loss_vol[0])
-            total_loss_terms.append(loss_vol[1])
-            total_loss_terms.append(loss_vol[2])
-            total_loss_terms.append(loss_vol[3])
-            total_loss_terms.append(loss_vol[4])
-        else:
-            loss_vol = loss_fn(
-                prediction_vol,
-                target_vol,
-                loss_fn_type.loss_type,
-                padded_value=-10,
-            )
-            loss_dict["loss_vol"] = loss_vol
-            total_loss_terms.append(loss_vol)
+        loss_vol = loss_fn(
+            prediction_vol,
+            target_vol,
+            loss_fn_type.loss_type,
+            padded_value=-10,
+        )
+        loss_dict["loss_vol"] = loss_vol
+        total_loss_terms.append(loss_vol)
 
     if prediction_surf is not None:
 
         target_surf = batch_inputs["surface_fields"]
-        surface_areas = batch_inputs["surface_areas"]
-        surface_areas = torch.unsqueeze(surface_areas, -1)
-        surface_normals = batch_inputs["surface_normals"]
-
-        # Needs to be taken from the dataset
-        stream_velocity = batch_inputs["global_params_values"][:, 0, :]
-
         loss_surf = loss_fn_surface(
             prediction_surf,
             target_surf,
             loss_fn_type.loss_type,
         )
 
-        loss_surf_area = loss_fn_area(
-            prediction_surf,
-            target_surf,
-            surface_normals,
-            surface_areas,
-            area_scaling_factor=loss_fn_type.area_weighing_factor,
-            loss_type=loss_fn_type.loss_type,
-        )
-
         if loss_fn_type.loss_type == "mse":
             loss_surf = loss_surf * surf_loss_scaling
-            loss_surf_area = loss_surf_area * surf_loss_scaling
 
         total_loss_terms.append(loss_surf)
         loss_dict["loss_surf"] = loss_surf
-        
-        # total_loss_terms.append(loss_surf_area)
-        # loss_dict["loss_surf_area"] = loss_surf_area
-        # loss_integral = (
-        #     integral_loss_fn(
-        #         prediction_surf,
-        #         target_surf,
-        #         surface_areas,
-        #         surface_normals,
-        #         stream_velocity,
-        #         padded_value=-10,
-        #     )
-        # ) * integral_scaling_factor
-        # loss_dict["loss_integral"] = loss_integral
-        # total_loss_terms.append(loss_integral)
 
     total_loss = sum(total_loss_terms)
     loss_dict["total_loss"] = total_loss
@@ -402,14 +232,9 @@ def validation_step(
             sampled_batched = dict_to_device(sample_batched, device)
 
             with autocast(enabled=True):
-                if add_physics_loss:
-                    prediction_vol, prediction_surf = model(
-                        sampled_batched, return_volume_neighbors=True
-                    )
-                else:
-                    prediction_vol, prediction_surf = model(sampled_batched)
+                prediction_vol, prediction_surf = model(sampled_batched)
 
-                loss, loss_dict = compute_loss_dict(
+                loss, _ = compute_loss_dict(
                     prediction_vol,
                     prediction_surf,
                     sampled_batched,
@@ -464,19 +289,10 @@ def train_epoch(
     for i_batch, sample_batched in enumerate(dataloader):
 
         sampled_batched = dict_to_device(sample_batched, device)
-
-        if add_physics_loss:
-            autocast_enabled = False
-        else:
-            autocast_enabled = True
+        autocast_enabled = True
         with autocast(enabled=autocast_enabled):
             with nvtx.range("Model Forward Pass"):
-                if add_physics_loss:
-                    prediction_vol, prediction_surf = model(
-                        sampled_batched, return_volume_neighbors=True
-                    )
-                else:
-                    prediction_vol, prediction_surf = model(sampled_batched)
+                prediction_vol, prediction_surf = model(sampled_batched)
 
             loss, loss_dict = compute_loss_dict(
                 prediction_vol,
@@ -564,13 +380,7 @@ def main(cfg: DictConfig) -> None:
 
     # Get physics imports conditionally
     add_physics_loss = getattr(cfg.train, "add_physics_loss", False)
-    
-    if add_physics_loss:
-        from physicsnemo.sym.eq.pde import PDE
-        from physicsnemo.sym.eq.ls.grads import FirstDeriv
-        from physicsnemo.sym.eq.pdes.navier_stokes import IncompressibleNavierStokes
-    else:
-        PDE = FirstDeriv = IncompressibleNavierStokes = None
+    PDE = FirstDeriv = IncompressibleNavierStokes = None
 
     num_vol_vars = 0
     volume_variable_names = []
@@ -615,23 +425,12 @@ def main(cfg: DictConfig) -> None:
     )
     if os.path.exists(vol_save_path):
         vol_factors = np.load(vol_save_path)
-        vol_factors_tensor = (
-            torch.from_numpy(vol_factors).to(dist.device) if add_physics_loss else None
-        )
+        vol_factors_tensor = None
     else:
         vol_factors = None
         vol_factors_tensor = None
 
     bounding_box = None
-    if add_physics_loss:
-        bounding_box = cfg.data.bounding_box
-        bounding_box = (
-            torch.from_numpy(
-                np.stack([bounding_box["max"], bounding_box["min"]], axis=0)
-            )
-            .to(vol_factors_tensor.dtype)
-            .to(dist.device)
-        )
 
     if os.path.exists(surf_save_path):
         surf_factors = np.load(surf_save_path)
@@ -712,10 +511,6 @@ def main(cfg: DictConfig) -> None:
     # Initialize physics components conditionally
     first_deriv = None
     eqn = None
-    if add_physics_loss:
-        first_deriv = FirstDeriv(dim=3, direct_input=True)
-        eqn = IncompressibleNavierStokes(rho=1.226, nu="nu", dim=3, time=False)
-        eqn = eqn.make_nodes(return_as_dict=True)
 
     # Initialize the scaler for mixed precision
     scaler = GradScaler()
@@ -764,9 +559,6 @@ def main(cfg: DictConfig) -> None:
         start_time = time.perf_counter()
         logger.info(f"Device {dist.device}, epoch {epoch_number}:")
         
-        if epoch == init_epoch and add_physics_loss:
-            logger.info("Physics loss enabled - mixed precision (autocast) will be disabled as physics loss computation is not supported with mixed precision")
-
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
 

@@ -15,15 +15,13 @@
 # limitations under the License.
 
 """
-This is the datapipe to read OpenFoam files (vtp/vtu/stl) and save them as point clouds 
+This is the datapipe to read Cadence files from Boeing (vtp/vtu/stl) and save them as point clouds 
 in npy format. 
-
 """
 
 import time, random, json, re
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Iterable, List, Literal, Mapping, Optional, Union, Callable
+from typing import Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -32,10 +30,13 @@ import vtk
 from physicsnemo.utils.domino.utils import *
 from torch.utils.data import Dataset
 
-PREF = 176.352
-RHOREF = 1.375e-6
-UINFTY = 2679.505
+## Constants across simulation files for reference pressure, rho, velocity
+PREF = np.float32(176.352)
+RHOREF = np.float32(1.375e-6)
+UINFTY = np.float32(2679.505)
 
+"""Class that defines the structure of the data files inside simulation folders
+"""
 class BoeingPaths:
     @staticmethod
     def geometry_path(car_dir: Path) -> Path:
@@ -49,11 +50,11 @@ class BoeingPaths:
     def surface_path(car_dir: Path) -> Path:
         return car_dir / "boundary_geo_F10_AoA_4.vtu"
 
+## TODO: Change the name of the class to better match the actual dataset/propagate changes 
 class OpenFoamDataset(Dataset):
     """
     Datapipe for converting boeing dataset to npy
     """
-
     def __init__(
         self,
         data_path: Union[str, Path],
@@ -70,7 +71,6 @@ class OpenFoamDataset(Dataset):
         if isinstance(data_path, str):
             data_path = Path(data_path)
         data_path = data_path.expanduser()
-
         self.data_path = data_path
 
         supported_kinds = ["boeing_data"]
@@ -92,8 +92,8 @@ class OpenFoamDataset(Dataset):
         self.volume_variables = volume_variables
         self.global_params_types = global_params_types
         self.global_params_reference = global_params_reference
-        self.kind = kind
         self.AoA = self.global_params_reference["AoA"]
+        self.kind = kind
         self.device = device
         self.model_type = model_type
 
@@ -114,18 +114,19 @@ class OpenFoamDataset(Dataset):
         else:
             raise ValueError(f"Could not extract AoA from volume filename: {volume_filename}")
 
-        ## Read geometry STL file
+        ## Read geometry STL file used for simulation (not same as surface mesh)
         stl_path = self.path_getter.geometry_path(car_dir)
         reader = pv.get_reader(stl_path)
         mesh_stl = reader.read()
-        stl_vertices = mesh_stl.points
+
+        stl_vertices = mesh_stl.points.astype(np.float32)
         stl_faces = np.array(mesh_stl.faces).reshape((-1, 4))[
             :, 1:
-        ]  # Assuming triangular elements
-        mesh_indices_flattened = stl_faces.flatten()
+        ].astype(np.float32)  # Assuming triangular elements
+        mesh_indices_flattened = stl_faces.flatten().astype(np.float32)
         stl_sizes = mesh_stl.compute_cell_sizes(length=False, area=True, volume=False)
-        stl_sizes = np.array(stl_sizes.cell_data["Area"])
-        stl_centers = np.array(mesh_stl.cell_centers().points)
+        stl_sizes = np.array(stl_sizes.cell_data["Area"]).astype(np.float32)
+        stl_centers = np.array(mesh_stl.cell_centers().points).astype(np.float32)
 
         ## Read volume VTU file
         if self.model_type == "volume" or self.model_type == "combined":
@@ -139,16 +140,12 @@ class OpenFoamDataset(Dataset):
             volume_coordinates, volume_fields = get_volume_data(
                 polydata, self.volume_variables
             )
-            volume_fields = np.concatenate(volume_fields, axis=-1)
-            print('volume_fields shape: ', volume_fields.shape)
-            print('volume_fields min: ', np.min(volume_fields, axis=0))
-            print('volume_fields max: ', np.max(volume_fields, axis=0))
+            volume_coordinates = np.float32(volume_coordinates)
+            volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
         
-            volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF # avg pressure
-            volume_fields[:, 1:2] = volume_fields[:, 1:2] / RHOREF # avg density
-            volume_fields[:, 2:] = volume_fields[:, 2:]   / UINFTY # avg velocity
-            print('volume_fields min after non-dimensionalization: ', np.min(volume_fields, axis=0))
-            print('volume_fields max after non-dimensionalization: ', np.max(volume_fields, axis=0))
+            # Non-dimensionalize by PREF and UINFTY
+            volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF 
+            volume_fields[:, 1:] = volume_fields[:, 1:]   / UINFTY
         else:
             volume_fields = None
             volume_coordinates = None
@@ -156,31 +153,21 @@ class OpenFoamDataset(Dataset):
         ## Read surface VTP file
         if self.model_type == "surface" or self.model_type == "combined":
             surface_filepath = self.path_getter.surface_path(car_dir)
-            reader = vtk.vtkXMLUnstructuredGridReader()
-            reader.SetFileName(surface_filepath)
-            reader.Update()
-            polydata = reader.GetOutput()
-            
-            celldata_all = get_node_to_elem(polydata)
-            celldata = celldata_all.GetCellData()
-            surface_fields = get_fields(celldata, self.surface_variables)
-            surface_fields = np.concatenate(surface_fields, axis=-1)
+            mesh = pv.read(surface_filepath)
+            mesh = mesh.point_data_to_cell_data()
 
-            mesh = pv.PolyData(polydata)
-            surface_coordinates = np.array(mesh.cell_centers().points)
+            surface_fields = []
+            for name in self.surface_variables:
+                surface_fields.append(np.array(mesh.cell_data[name]).astype(np.float32))
+            surface_fields = np.array(surface_fields)
+            surface_fields = np.stack(surface_fields, axis=-1)
+         
+            surface_normals_area = np.array(mesh.cell_data["N_BF"]).astype(np.float32)
+            surface_areas = np.linalg.norm(surface_normals_area, axis=1).astype(np.float32)
+            surface_normals = np.array(mesh.cell_data["N_BF"])//np.reshape(surface_areas, (-1, 1))
+            surface_coordinates = mesh.cell_centers().points.astype(np.float32)
 
-            surface_normals = np.array(mesh.cell_normals)
-            surface_sizes = mesh.compute_cell_sizes(
-                length=False, area=True, volume=False
-            )
-            surface_sizes = np.array(surface_sizes.cell_data["Area"])
-
-            # Normalize cell normals
-            surface_normals = (
-                surface_normals / np.linalg.norm(surface_normals, axis=1)[:, np.newaxis]
-            )
-
-            # Non-dimensionalize surface fields
+            # Non-dimensionalize by PREF
             surface_fields = surface_fields / PREF
         else:
             surface_fields = None
@@ -216,25 +203,72 @@ class OpenFoamDataset(Dataset):
                     f"Global parameter {key} not supported for  this dataset"
                 )
         global_params_values = np.array(global_params_values_list, dtype=np.float32)
-
-
-        # print('Surface fields shape: ', surface_fields.shape, 'Volume fields shape: ', volume_fields.shape)
-        # print('Surface fields min: ', np.min(surface_fields), 'Surface fields max: ', np.max(surface_fields))
-        print('Volume fields min: ', np.min(volume_fields), 'Volume fields max: ', np.max(volume_fields))
-        print('global_params_values: ', global_params_values)
-        print('global_params_reference: ', global_params_reference)
         
+        ## Log min/max for all returned variables
+        print(
+            f"stl_coordinates: shape={stl_vertices.shape}, "
+            f"min={stl_vertices.min():.4f}, max={stl_vertices.max():.4f}"
+        )
+        print(
+            f"stl_centers: shape={stl_centers.shape}, "
+            f"min={stl_centers.min():.4f}, max={stl_centers.max():.4f}"
+        )
+        print(
+            f"stl_faces: shape={mesh_indices_flattened.shape}, "
+            f"min={mesh_indices_flattened.min():.4f}, "
+            f"max={mesh_indices_flattened.max():.4f}"
+        )
+        print(
+            f"stl_areas: shape={stl_sizes.shape}, "
+            f"min={stl_sizes.min():.4f}, max={stl_sizes.max():.4f}"
+        )
+
+        if surface_coordinates is not None:
+            print(
+                f"surface_mesh_centers: shape={surface_coordinates.shape}, "
+                f"min={surface_coordinates.min():.4f}, "
+                f"max={surface_coordinates.max():.4f}"
+            )
+            print(
+                f"surface_normals: shape={surface_normals.shape}, "
+                f"min={surface_normals.min():.4f}, "
+                f"max={surface_normals.max():.4f}"
+            )
+            print(
+                f"surface_areas: shape={surface_areas.shape}, "
+                f"min={surface_areas.min():.4f}, max={surface_areas.max():.4f}"
+            )
+            print(
+                f"surface_fields: shape={surface_fields.shape}, "
+                f"min={surface_fields.min():.4f}, "
+                f"max={surface_fields.max():.4f}"
+            )
+
+        if volume_coordinates is not None:
+            print(
+                f"volume_mesh_centers: shape={volume_coordinates.shape}, "
+                f"min={volume_coordinates.min():.4f}, "
+                f"max={volume_coordinates.max():.4f}"
+            )
+            print(
+                f"volume_fields: shape={volume_fields.shape}, "
+                f"min={volume_fields.min():.4f}, max={volume_fields.max():.4f}"
+            )
+
+        print(f"global_params_values: {global_params_values}")
+        print(f"global_params_reference: {global_params_reference}")
+
         return {
-            "stl_coordinates": np.float32(stl_vertices),
-            "stl_centers": np.float32(stl_centers),
-            "stl_faces": np.float32(mesh_indices_flattened),
-            "stl_areas": np.float32(stl_sizes),
-            "surface_mesh_centers": None,
-            "surface_normals": None,
-            "surface_areas": None,
-            "surface_fields": None,
-            "volume_fields": np.float32(volume_fields),
-            "volume_mesh_centers": np.float32(volume_coordinates),
+            "stl_coordinates": (stl_vertices),
+            "stl_centers": (stl_centers),
+            "stl_faces": (mesh_indices_flattened),
+            "stl_areas": (stl_sizes),
+            "surface_mesh_centers": (surface_coordinates),
+            "surface_normals": (surface_normals),
+            "surface_areas": (surface_areas),
+            "surface_fields": (surface_fields),
+            "volume_fields": (volume_fields),
+            "volume_mesh_centers": (volume_coordinates),
             "filename": cfd_filename,
             "global_params_values": global_params_values,
             "global_params_reference": global_params_reference,
