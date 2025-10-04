@@ -61,7 +61,7 @@ variables:
   global_parameters:
     AoA:
       type: scalar
-      reference: 4.0
+      reference: 22.0
 
 # ┌───────────────────────────────────────────┐
 # │          Training Data Configs            │

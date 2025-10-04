@@ -40,15 +40,24 @@ UINFTY = np.float32(2679.505)
 class BoeingPaths:
     @staticmethod
     def geometry_path(car_dir: Path) -> Path:
-        return car_dir / "CRMHL_ap_F10_cf.stl"
+        stl_files = list(car_dir.glob("*.stl"))
+        if len(stl_files) == 0:
+            raise FileNotFoundError(f"No *.stl file found in {car_dir}")
+        return stl_files[0]
 
     @staticmethod
     def volume_path(car_dir: Path) -> Path:
-        return car_dir / "volume_geo_F10_AoA_4.vtu"
+        volume_files = list(car_dir.glob("volume_*.vtu"))
+        if len(volume_files) == 0:
+            raise FileNotFoundError(f"No volume_*.vtu file found in {car_dir}")
+        return volume_files[0]
 
     @staticmethod
     def surface_path(car_dir: Path) -> Path:
-        return car_dir / "boundary_geo_F10_AoA_4.vtu"
+        boundary_files = list(car_dir.glob("boundary_*.vtu"))
+        if len(boundary_files) == 0:
+            raise FileNotFoundError(f"No boundary_*.vtu file found in {car_dir}")
+        return boundary_files[0]
 
 ## TODO: Change the name of the class to better match the actual dataset/propagate changes 
 class OpenFoamDataset(Dataset):
