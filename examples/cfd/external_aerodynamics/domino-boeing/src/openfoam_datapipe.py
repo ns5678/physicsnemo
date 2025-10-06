@@ -152,7 +152,7 @@ class OpenFoamDataset(Dataset):
         
             # Non-dimensionalize by PREF and UINFTY
             volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF 
-            volume_fields[:, 1:] = volume_fields[:, 1:]   / UINFTY
+            volume_fields[:, 1:] = volume_fields[:, 1:] / UINFTY
         else:
             volume_fields = None
             volume_coordinates = None
@@ -171,7 +171,7 @@ class OpenFoamDataset(Dataset):
          
             surface_normals_area = np.array(mesh.cell_data["N_BF"]).astype(np.float32)
             surface_areas = np.linalg.norm(surface_normals_area, axis=1).astype(np.float32)
-            surface_normals = np.array(mesh.cell_data["N_BF"])//np.reshape(surface_areas, (-1, 1))
+            surface_normals = np.array(mesh.cell_data["N_BF"])/np.reshape(surface_areas, (-1, 1))
             surface_coordinates = mesh.cell_centers().points.astype(np.float32)
 
             # Non-dimensionalize by PREF

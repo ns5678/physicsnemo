@@ -40,11 +40,11 @@ resume_dir: ${output}/models
 # Data processor configurable parameters
 data_processor:
   kind: boeing_data # must be either drivesim or drivaer_aws
-  output_dir: /lustre/users/snidhan/gen-data/
-  input_dir: /lustre/users/snidhan/raw-data/
+  output_dir: /lustre/datasets/HiLiftAeroMLMiniProcessed/
+  input_dir: /lustre/datasets/HiLiftAeroMLMini/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
-  num_processors: 64
+  num_processors: 24
 
 # ┌───────────────────────────────────────────┐
 # │            Solution variables             │
@@ -68,8 +68,8 @@ variables:
 # └───────────────────────────────────────────┘  
 # Input directory for training and validation data
 data:
-  input_dir: /lustre/users/snidhan/gen-data/
-  input_dir_val: /lustre/users/snidhan/gen-data/
+  input_dir: /lustre/datasets/HiLiftAeroMLMiniProcessed/train
+  input_dir_val: /lustre/datasets/HiLiftAeroMLMiniProcessed/val
   bounding_box: # Bounding box dimensions for shift wing volume
     min: [0.0, 0.0, -250.0]
     max: [3500.0, 1500.0, 1500.0]

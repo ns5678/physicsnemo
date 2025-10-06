@@ -1,4 +1,4 @@
-# DoMINO: Decomposable Multi-scale Iterative Neural Operator for External Aerodynamics
+# DoMINO: Decomposable Multi-scale Iterative Neural Operator for Cadence Boeing Data
 
 DoMINO is a local, multi-scale, point-cloud based model architecture to model large-scale
 physics problems such as external aerodynamics. The DoMINO model architecture takes STL
