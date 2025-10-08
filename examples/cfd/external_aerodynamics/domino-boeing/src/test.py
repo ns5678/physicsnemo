@@ -16,13 +16,13 @@
 
 """
 This code defines a distributed pipeline for testing the DoMINO model on
-CFD datasets. It includes the instantiating the DoMINO model and datapipe, 
-automatically loading the most recent checkpoint, reading the VTP/VTU/STL 
-testing files, calculation of parameters required for DoMINO model and 
-evaluating the model in parallel using DistributedDataParallel across multiple 
-GPUs. This is a common recipe that enables training of combined models for surface 
-and volume as well either of them separately. The model predictions are loaded in 
-the the VTP/VTU files and saved in the specified directory. The eval tab in 
+CFD datasets. It includes the instantiating the DoMINO model and datapipe,
+automatically loading the most recent checkpoint, reading the VTP/VTU/STL
+testing files, calculation of parameters required for DoMINO model and
+evaluating the model in parallel using DistributedDataParallel across multiple
+GPUs. This is a common recipe that enables training of combined models for surface
+and volume as well either of them separately. The model predictions are loaded in
+the the VTP/VTU files and saved in the specified directory. The eval tab in
 config.yaml can be used to specify the input and output directories.
 """
 
@@ -56,8 +56,10 @@ from physicsnemo.models.domino.model import DoMINO
 from physicsnemo.utils.domino.utils import *
 from physicsnemo.utils.sdf import signed_distance_field
 
-# AIR_DENSITY = 1.205
-# STREAM_VELOCITY = 30.00
+## Constants across simulation files for reference pressure, rho, velocity
+PREF = np.float32(176.352)
+RHOREF = np.float32(1.375e-6)
+UINFTY = np.float32(2679.505)
 
 
 def loss_fn(output, target):
@@ -83,7 +85,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
         output_features_surf = None
 
     with torch.no_grad():
-        point_batch_size = 256000
+        point_batch_size = 1024000
         data_dict = dict_to_device(data_dict, device)
 
         # Non-dimensionalization factors
@@ -91,9 +93,6 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
 
         global_params_values = data_dict["global_params_values"]
         global_params_reference = data_dict["global_params_reference"]
-        stream_velocity = global_params_reference[:, 0, :]
-        air_density = global_params_reference[:, 1, :]
-        pressure = global_params_reference[:, 2, :]
 
         # STL nodes
         geo_centers = data_dict["geometry_coordinates"]
@@ -187,13 +186,6 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                     pos_encoding = model.position_encoder(
                         pos_encoding, eval_mode="volume"
                     )
-                    print("\n--- DEBUG INFO ---")
-                    print(f"volume_mesh_centers_batch | shape: {volume_mesh_centers_batch.shape} | min: {volume_mesh_centers_batch.min():.6f} | max: {volume_mesh_centers_batch.max():.6f}")
-                    print(f"geo_encoding_local       | shape: {geo_encoding_local.shape} | min: {geo_encoding_local.min():.6f} | max: {geo_encoding_local.max():.6f}")
-                    print(f"pos_encoding             | shape: {pos_encoding.shape} | min: {pos_encoding.min():.6f} | max: {pos_encoding.max():.6f}")
-                    print(f"global_params_values     | shape: {global_params_values.shape} | min: {global_params_values.min():.6f} | max: {global_params_values.max():.6f}")
-                    print(f"global_params_reference  | shape: {global_params_reference.shape} | min: {global_params_reference.min():.6f} | max: {global_params_reference.max():.6f}")
-                    print("--- END DEBUG ---\n")
                     tpredictions_batch = model.calculate_solution(
                         volume_mesh_centers_batch,
                         geo_encoding_local,
@@ -204,18 +196,15 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                         eval_mode="volume",
                     )
                     running_tloss_vol += loss_fn(tpredictions_batch, target_batch)
-                    prediction_vol[
-                        :, start_idx:end_idx
-                    ] = tpredictions_batch.cpu().numpy()
+                    prediction_vol[:, start_idx:end_idx] = (
+                        tpredictions_batch.cpu().numpy()
+                    )
 
             prediction_vol = unnormalize(prediction_vol, vol_factors[0], vol_factors[1])
 
-            prediction_vol[:, :, :1] = (
-                prediction_vol[:, :, :1] * pressure[0, 0].cpu().numpy()
-            )
-            prediction_vol[:, :, 1:] = (
-                prediction_vol[:, :, 1:] * stream_velocity[0, 0].cpu().numpy()
-            )
+            prediction_vol[:, :, :1] = prediction_vol[:, :, 0:1] * PREF
+            prediction_vol[:, :, 1:] = prediction_vol[:, :, 1:] * UINFTY
+
         else:
             prediction_vol = None
 
@@ -287,14 +276,15 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                         num_sample_points=cfg.model.num_neighbors_surface,
                     )
                     running_tloss_surf += loss_fn(tpredictions_batch, target_batch)
-                    prediction_surf[
-                        :, start_idx:end_idx
-                    ] = tpredictions_batch.cpu().numpy()
+                    prediction_surf[:, start_idx:end_idx] = (
+                        tpredictions_batch.cpu().numpy()
+                    )
 
-            prediction_surf = (
-                unnormalize(prediction_surf, surf_factors[0], surf_factors[1])
-                * pressure[0, 0].cpu().numpy()
+            prediction_surf = unnormalize(
+                prediction_surf, surf_factors[0], surf_factors[1]
             )
+
+            prediction_surf *= PREF
 
         else:
             prediction_surf = None
@@ -409,17 +399,17 @@ def main(cfg: DictConfig):
     aero_forces_all = []
     for count, dirname in enumerate(dirnames_per_gpu):
         filepath = os.path.join(input_path, dirname)
-        tag = int(re.findall(r"(\w+?)(\d+)", dirname)[0][1])
-        stl_path = os.path.join(filepath, f"merged_surfaces.stl")
-        vtp_path = os.path.join(filepath, f"merged_surfaces.vtp")
-        vtu_path = os.path.join(filepath, f"merged_volumes.vtu")
+        tag = re.findall(r"(LHC\d+_AoA_\d+)", dirname)[0]
+        stl_path = os.path.join(filepath, f"{dirname}.stl")
+        vtp_path = os.path.join(filepath, f"boundary_{dirname}.vtu")
+        vtu_path = os.path.join(filepath, f"volume_{dirname}.vtu")
 
         vtp_pred_save_path = os.path.join(
-            pred_save_path, f"boundary_{tag}_predicted.vtp"
+            pred_save_path, f"boundary_{tag}_predicted.vtu"
         )
         vtu_pred_save_path = os.path.join(pred_save_path, f"volume_{tag}_predicted.vtu")
 
-        # Read STL
+        ## Read STL file
         reader = pv.get_reader(stl_path)
         mesh_stl = reader.read()
         stl_vertices = mesh_stl.points
@@ -473,9 +463,6 @@ def main(cfg: DictConfig):
             name: cfg.variables.global_parameters[name]["type"]
             for name in global_params_names
         }
-        stream_velocity = global_params_reference["inlet_velocity"][0]
-        air_density = global_params_reference["air_density"]
-        pressure = global_params_reference["pressure"]
 
         # Arrange global parameters reference in a list, ensuring it is flat
         global_params_reference_list = []
@@ -496,46 +483,66 @@ def main(cfg: DictConfig):
         # Note: The user must ensure that the values provided here correspond to the
         # `global_parameters` specified in `config.yaml` and that these parameters
         # exist within each simulation file.
+        aoa_match = re.search(r"AoA_(\d+(?:\.\d+)?)", dirname)
+        if aoa_match:
+            sample_AoA = np.float32(aoa_match.group(1))
+        else:
+            raise ValueError(f"Could not extract AoA from folder name: {dirname}")
+
         global_params_values_list = []
         for key in global_params_types.keys():
-            if key == "inlet_velocity":
-                global_params_values_list.append(stream_velocity)
-            elif key == "air_density":
-                global_params_values_list.append(air_density)
-            elif key == "pressure":
-                global_params_values_list.append(pressure)
+            if key == "AoA":
+                global_params_values_list.append(sample_AoA)
             else:
                 raise ValueError(
                     f"Global parameter {key} not supported for  this dataset"
                 )
         global_params_values = np.array(global_params_values_list, dtype=np.float32)
 
-        # Read VTP
+        ## Read surface VTU files
         if model_type == "surface" or model_type == "combined":
-            reader = vtk.vtkXMLPolyDataReader()
-            reader.SetFileName(vtp_path)
-            reader.Update()
-            polydata_surf = reader.GetOutput()
+            mesh = pv.read(vtp_path)
 
-            celldata_all = get_node_to_elem(polydata_surf)
+            # Keep only the arrays specified in config and convert to float32
+            # Store the arrays we want to keep (surface variables + N_BF for normals)
+            arrays_to_keep = surface_variable_names + ["N_BF"]
 
-            celldata = celldata_all.GetCellData()
-            surface_fields = get_fields(celldata, surface_variable_names)
-            surface_fields = np.concatenate(surface_fields, axis=-1)
+            # Get all array names in point data
+            all_arrays = [
+                mesh.point_data.keys()[i] for i in range(len(mesh.point_data.keys()))
+            ]
 
-            mesh = pv.PolyData(polydata_surf)
-            surface_coordinates = np.array(mesh.cell_centers().points, dtype=np.float32)
+            # Remove arrays not in the keep list
+            for array_name in all_arrays:
+                if array_name not in arrays_to_keep:
+                    mesh.point_data.pop(array_name, None)
 
-            surface_normals = np.array(mesh.cell_normals, dtype=np.float32)
-            surface_sizes = mesh.compute_cell_sizes(
-                length=False, area=True, volume=False
+            # Convert remaining arrays to float32
+            for array_name in mesh.point_data.keys():
+                mesh.point_data[array_name] = mesh.point_data[array_name].astype(
+                    np.float32
+                )
+
+            # Convert points to float32
+            mesh.points = mesh.points.astype(np.float32)
+
+            # Convert to cell data for processing
+            mesh = mesh.point_data_to_cell_data()
+
+            surface_fields = []
+            for name in surface_variable_names:
+                surface_fields.append(np.array(mesh.cell_data[name]).astype(np.float32))
+            surface_fields = np.array(surface_fields)
+            surface_fields = np.stack(surface_fields, axis=-1)
+
+            surface_normals_area = np.array(mesh.cell_data["N_BF"]).astype(np.float32)
+            surface_sizes = np.linalg.norm(surface_normals_area, axis=1).astype(
+                np.float32
             )
-            surface_sizes = np.array(surface_sizes.cell_data["Area"], dtype=np.float32)
-
-            # Normalize cell normals
-            surface_normals = (
-                surface_normals / np.linalg.norm(surface_normals, axis=1)[:, np.newaxis]
+            surface_normals = np.array(mesh.cell_data["N_BF"]) / np.reshape(
+                surface_sizes, (-1, 1)
             )
+            surface_coordinates = mesh.cell_centers().points.astype(np.float32)
 
             if cfg.model.num_neighbors_surface > 1:
                 interp_func = KDTree(surface_coordinates)
@@ -582,16 +589,61 @@ def main(cfg: DictConfig):
             surface_neighbors_sizes = None
             pos_surface_center_of_mass = None
 
-        # Read VTU
+        ## Read and prune the VTU files to only have arrays in volume_variables
         if model_type == "volume" or model_type == "combined":
+
             reader = vtk.vtkXMLUnstructuredGridReader()
             reader.SetFileName(vtu_path)
             reader.Update()
             polydata_vol = reader.GetOutput()
+
+            # Keep only the arrays specified in config and convert to float32
+            point_data = polydata_vol.GetPointData()
+
+            # Store the arrays we want to keep in a dictionary
+            arrays_to_keep = {}
+            for var_name in volume_variable_names:
+                if point_data.HasArray(var_name):
+                    array = point_data.GetArray(var_name)
+                    array_np = numpy_support.vtk_to_numpy(array).astype(np.float32)
+                    arrays_to_keep[var_name] = array_np
+
+            # Remove all arrays for point data
+            num_arrays = point_data.GetNumberOfArrays()
+            for i in range(num_arrays - 1, -1, -1):
+                array_name = point_data.GetArray(i).GetName()
+                point_data.RemoveArray(array_name)
+
+            # Add back only the arrays we want to keep as float32
+            for var_name, array_np in arrays_to_keep.items():
+                array_float32 = numpy_support.numpy_to_vtk(array_np)
+                array_float32.SetName(var_name)
+                point_data.AddArray(array_float32)
+
+            # Convert points to float32
+            points = polydata_vol.GetPoints()
+            points_np = numpy_support.vtk_to_numpy(points.GetData()).astype(np.float32)
+            points_float32 = numpy_support.numpy_to_vtk(points_np)
+            points.SetData(points_float32)
+
+            # Create new polydata as point cloud (just points + point data, no cells/connectivity)
+            new_polydata = vtk.vtkPolyData()
+            new_polydata.SetPoints(polydata_vol.GetPoints())
+
+            # Copy all point data arrays to the new polydata
+            point_data_source = polydata_vol.GetPointData()
+            point_data_dest = new_polydata.GetPointData()
+            for i in range(point_data_source.GetNumberOfArrays()):
+                point_data_dest.AddArray(point_data_source.GetArray(i))
+
+            # Replace polydata_vol with point cloud version (no cells)
+            polydata_vol = new_polydata
+
             volume_coordinates, volume_fields = get_volume_data(
                 polydata_vol, volume_variable_names
             )
-            volume_fields = np.concatenate(volume_fields, axis=-1)
+            volume_coordinates = np.float32(volume_coordinates)
+            volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
 
             bounding_box_dims = []
             bounding_box_dims.append(np.asarray(cfg.data.bounding_box.max))
@@ -657,8 +709,6 @@ def main(cfg: DictConfig):
             volume_fields = None
             pos_volume_closest = None
             pos_volume_center_of_mass = None
-
-        # print(f"Processed sdf and normalized")
 
         geom_centers = np.float32(stl_vertices)
 
@@ -750,57 +800,6 @@ def main(cfg: DictConfig):
         if prediction_surf is not None:
             surface_sizes = np.expand_dims(surface_sizes, -1)
 
-            # pres_x_pred = np.sum(
-            #     prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            # )
-            # shear_x_pred = np.sum(prediction_surf[0, :, 1] * surface_sizes[:, 0])
-
-            # pres_x_true = np.sum(
-            #     surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            # )
-            # shear_x_true = np.sum(surface_fields[:, 1] * surface_sizes[:, 0])
-
-            # force_x_pred = np.sum(
-            #     prediction_surf[0, :, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            #     - prediction_surf[0, :, 1] * surface_sizes[:, 0]
-            # )
-            # force_x_true = np.sum(
-            #     surface_fields[:, 0] * surface_normals[:, 0] * surface_sizes[:, 0]
-            #     - surface_fields[:, 1] * surface_sizes[:, 0]
-            # )
-
-            # force_y_pred = np.sum(
-            #     prediction_surf[0, :, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
-            #     - prediction_surf[0, :, 2] * surface_sizes[:, 0]
-            # )
-            # force_y_true = np.sum(
-            #     surface_fields[:, 0] * surface_normals[:, 1] * surface_sizes[:, 0]
-            #     - surface_fields[:, 2] * surface_sizes[:, 0]
-            # )
-
-            # force_z_pred = np.sum(
-            #     prediction_surf[0, :, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
-            #     - prediction_surf[0, :, 3] * surface_sizes[:, 0]
-            # )
-            # force_z_true = np.sum(
-            #     surface_fields[:, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
-            #     - surface_fields[:, 3] * surface_sizes[:, 0]
-            # )
-            # print("Drag=", dirname, force_x_pred, force_x_true)
-            # print("Lift=", dirname, force_z_pred, force_z_true)
-            # print("Side=", dirname, force_y_pred, force_y_true)
-            # aero_forces_all.append(
-            #     [
-            #         dirname,
-            #         force_x_pred,
-            #         force_x_true,
-            #         force_z_pred,
-            #         force_z_true,
-            #         force_y_pred,
-            #         force_y_true,
-            #     ]
-            # )
-
             l2_gt = np.mean(np.square(surface_fields), (0))
             l2_error = np.mean(np.square(prediction_surf[0] - surface_fields), (0))
             l2_surface_all.append(np.sqrt(l2_error / l2_gt))
@@ -837,27 +836,93 @@ def main(cfg: DictConfig):
             l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
 
         if prediction_surf is not None:
-            surfParam_vtk = numpy_support.numpy_to_vtk(prediction_surf[0, :, 0:1])
-            surfParam_vtk.SetName(f"{surface_variable_names[0]}Pred")
-            celldata_all.GetCellData().AddArray(surfParam_vtk)
+            # Add prediction arrays to mesh cell data
+            mesh[f"{surface_variable_names[0]}Pred"] = (
+                prediction_surf[0, :, 0:1].astype(np.float32).flatten()
+            )
+            mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
+                np.float32
+            )
 
-            surfParam_vtk = numpy_support.numpy_to_vtk(prediction_surf[0, :, 1:])
-            surfParam_vtk.SetName(f"{surface_variable_names[1]}Pred")
-            celldata_all.GetCellData().AddArray(surfParam_vtk)
+            # Convert back to point data before saving to avoid ParaView GPU texture buffer limits
+            mesh_with_point_data = mesh.cell_data_to_point_data()
 
-            write_to_vtp(celldata_all, vtp_pred_save_path)
+            # Save the mesh with predictions as VTU (using point data)
+            mesh_with_point_data.save(vtp_pred_save_path)
 
-        if prediction_vol is not None:
+        # if prediction_vol is not None:
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1])
-            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:4])
-            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            write_to_vtu(polydata_vol, vtu_pred_save_path)
+        #     # Debug: Analyze polydata_vol before writing
+        #     print(f"\n[DEBUG] ===== POLYDATA_VOL ANALYSIS BEFORE WRITE_TO_VTU =====")
+        #     print(f"[DEBUG] Number of points: {polydata_vol.GetNumberOfPoints():,}")
+        #     print(f"[DEBUG] Number of cells: {polydata_vol.GetNumberOfCells():,}")
+
+        #     # Analyze point data arrays
+        #     point_data = polydata_vol.GetPointData()
+        #     num_arrays = point_data.GetNumberOfArrays()
+        #     print(f"[DEBUG] Number of point data arrays: {num_arrays}")
+
+        #     total_memory_mb = 0.0
+        #     for i in range(num_arrays):
+        #         array = point_data.GetArray(i)
+        #         array_name = array.GetName()
+        #         num_tuples = array.GetNumberOfTuples()
+        #         num_components = array.GetNumberOfComponents()
+        #         data_type = array.GetDataType()
+
+        #         # Estimate memory usage (assuming float32 = 4 bytes, float64 = 8 bytes, int32 = 4 bytes, etc.)
+        #         if data_type == vtk.VTK_FLOAT: # VTK_FLOAT = 10
+        #             bytes_per_element = 4
+        #         elif data_type == vtk.VTK_DOUBLE:
+        #             bytes_per_element = 8
+        #         elif data_type == vtk.VTK_INT:
+        #             bytes_per_element = 4
+        #         elif data_type == vtk.VTK_LONG:
+        #             bytes_per_element = 8
+        #         else:
+        #             bytes_per_element = 4  # default estimate
+
+        #         array_memory_mb = (num_tuples * num_components * bytes_per_element) / (1024 * 1024)
+        #         total_memory_mb += array_memory_mb
+
+        #         print(f"[DEBUG]   Array {i}: '{array_name}' - {num_tuples:,} tuples x {num_components} components, "
+        #               f"type={data_type}, ~{array_memory_mb:.2f} MB")
+
+        #     # Estimate geometry memory (points and cells)
+        #     points = polydata_vol.GetPoints()
+        #     if points:
+        #         points_memory_mb = (polydata_vol.GetNumberOfPoints() * 3 * 4) / (1024 * 1024)  # 3 coords * 4 bytes
+        #         total_memory_mb += points_memory_mb
+        #         print(f"[DEBUG] Points geometry: ~{points_memory_mb:.2f} MB")
+
+        #     print(f"[DEBUG] TOTAL ESTIMATED MEMORY: ~{total_memory_mb:.2f} MB ({total_memory_mb/1024:.2f} GB)")
+        #     print(f"[DEBUG] ========================================================\n")
+
+        #     # Convert polydata (point cloud) to unstructured grid for VTU format
+        #     # VTU requires vtkUnstructuredGrid, not vtkPolyData
+        #     unstructured_grid = vtk.vtkUnstructuredGrid()
+        #     unstructured_grid.SetPoints(polydata_vol.GetPoints())
+
+        #     # Copy all point data arrays
+        #     point_data_source = polydata_vol.GetPointData()
+        #     point_data_dest = unstructured_grid.GetPointData()
+        #     for i in range(point_data_source.GetNumberOfArrays()):
+        #         point_data_dest.AddArray(point_data_source.GetArray(i))
+
+        #     # Time the actual write operation
+        #     print(f"[DEBUG] Starting write_to_vtu operation...")
+        #     write_start_time = time.time()
+        #     write_to_vtu(unstructured_grid, vtu_pred_save_path)
+        #     write_time = time.time() - write_start_time
+        #     print(f"[DEBUG] write_to_vtu completed in: {write_time:.3f} seconds")
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4

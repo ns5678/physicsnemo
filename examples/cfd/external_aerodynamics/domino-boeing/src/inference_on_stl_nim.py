@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import os
+import re
 import time
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
@@ -61,71 +62,10 @@ except:
     CUPY_AVAILABLE = False
     cp = None
 
-
-def plot(truth, prediction, var, save_path, axes_titles=None, plot_error=True):
-    if plot_error:
-        c = 3
-    else:
-        c = 2
-    fig, axes = plt.subplots(1, c, figsize=(15, 5))
-    error = truth - prediction
-    # Plot Truth
-    im = axes[0].imshow(
-        truth,
-        cmap="jet",
-        vmax=np.ma.masked_invalid(truth).max(),
-        vmin=np.ma.masked_invalid(truth).min(),
-    )
-    axes[0].axis("off")
-    cbar = fig.colorbar(im, ax=axes[0], orientation="vertical")
-    cbar.ax.tick_params(labelsize=12)
-    if axes_titles is None:
-        axes[0].set_title(f"{var} Truth")
-    else:
-        axes[0].set_title(axes_titles[0])
-
-    # Plot Predictions
-    im = axes[1].imshow(
-        prediction,
-        cmap="jet",
-        vmax=np.ma.masked_invalid(prediction).max(),
-        vmin=np.ma.masked_invalid(prediction).min(),
-    )
-    axes[1].axis("off")
-    cbar = fig.colorbar(im, ax=axes[1], orientation="vertical")
-    cbar.ax.tick_params(labelsize=12)
-    if axes_titles is None:
-        axes[1].set_title(f"{var} Predicted")
-    else:
-        axes[1].set_title(axes_titles[1])
-
-    if plot_error:
-        # Plot Error
-        im = axes[2].imshow(
-            error,
-            cmap="jet",
-            vmax=np.ma.masked_invalid(error).max(),
-            vmin=np.ma.masked_invalid(error).min(),
-        )
-        axes[2].axis("off")
-        cbar = fig.colorbar(im, ax=axes[2], orientation="vertical")
-        cbar.ax.tick_params(labelsize=12)
-        if axes_titles is None:
-            axes[2].set_title(f"{var} Error")
-        else:
-            axes[2].set_title(axes_titles[2])
-
-        MAE = np.mean(np.ma.masked_invalid((error)))
-
-        if MAE:
-            fig.suptitle(f"MAE {MAE}", fontsize=18, x=0.5)
-
-    plt.tight_layout()
-
-    path_to_save_path = os.path.join(save_path)
-    plt.savefig(path_to_save_path, bbox_inches="tight", pad_inches=0.1)
-    plt.close()
-
+## Reference parameters to be accessed globally -- Not a good practice
+## Ok for demo
+PREF = np.float32(176.352)
+UINFTY = np.float32(2679.505)
 
 @wp.kernel
 def _bvh_query_distance(
@@ -267,6 +207,7 @@ def shuffle_array_torch(surface_vertices, geometry_points, device):
     surface_sampled = torch.gather(surface_vertices, 0, idx)
     return surface_sampled
 
+
 class inferenceDataPipe:
     def __init__(
         self,
@@ -297,13 +238,13 @@ class inferenceDataPipe:
         self.data_dict = {}
 
     def clear_dict(self):
-        del(self.data_dict)
+        del self.data_dict
 
     def clear_volume_dict(self):
-        del(self.data_dict["volume_mesh_centers"])
-        del(self.data_dict["pos_enc_closest"])
-        del(self.data_dict["pos_normals_com"])
-        del(self.data_dict["sdf_nodes"])
+        del self.data_dict["volume_mesh_centers"]
+        del self.data_dict["pos_enc_closest"]
+        del self.data_dict["pos_normals_com"]
+        del self.data_dict["sdf_nodes"]
 
     def create_grid_torch(self, mx, mn, nres):
         start_time = time.time()
@@ -311,7 +252,7 @@ class inferenceDataPipe:
         dy = torch.linspace(mn[1], mx[1], nres[1], device=self.device)
         dz = torch.linspace(mn[2], mx[2], nres[2], device=self.device)
 
-        xv, yv, zv = torch.meshgrid(dx, dy, dz, indexing='ij')
+        xv, yv, zv = torch.meshgrid(dx, dy, dz, indexing="ij")
         xv = torch.unsqueeze(xv, -1)
         yv = torch.unsqueeze(yv, -1)
         zv = torch.unsqueeze(zv, -1)
@@ -620,26 +561,11 @@ class dominoInference:
             self.device = self.dist.device
             self.world_size = self.dist.world_size
 
-        # Initialize pressure and air_density from config with defaults
-        pressure_value = (
-            cfg.get("variables", {})
-            .get("global_parameters", {})
-            .get("pressure", {})
-            .get("reference", 23840.0)
-        )
-        air_density_value = (
-            cfg.get("variables", {})
-            .get("global_parameters", {})
-            .get("air_density", {})
-            .get("reference", 0.38)
-        )
-
-        self.pressure = torch.full((1, 1), pressure_value, dtype=torch.float32).to(
+        # Initialize AoA (angle of attack) - this is the only variable parameter
+        self.aoa = None
+        self.aoa_reference = torch.full((1, 1), 22.0, dtype=torch.float32).to(
             self.device
         )
-        self.air_density = torch.full(
-            (1, 1), air_density_value, dtype=torch.float32
-        ).to(self.device)
 
         self.num_vol_vars, self.num_surf_vars, self.num_global_features = (
             self.get_num_variables()
@@ -709,33 +635,33 @@ class dominoInference:
             self.bounding_box_surface_min_max = [c_min, c_max]
 
     def load_volume_scaling_factors(self):
-        vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
-        vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
-        vol_factors = np.stack([vol_mean, vol_std])
-        vol_factors = torch.from_numpy(vol_factors).to(self.device)
-        # scaling_param_path = self.cfg.eval.scaling_param_path
-        # vol_factors_path = os.path.join(
-        #     scaling_param_path, "volume_scaling_factors.npy"
-        # )
-
-        # vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        # vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
+        # vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
+        # vol_factors = np.stack([vol_mean, vol_std])
         # vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        vol_factors_path = os.path.join(
+            scaling_param_path, "volume_scaling_factors.npy"
+        )
+
+        vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
         return vol_factors
 
     def load_surface_scaling_factors(self):
-        surf_mean = np.array(
-            self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
-        )
-        surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
-        surf_factors = np.stack([surf_mean, surf_std])
-        surf_factors = torch.from_numpy(surf_factors).to(self.device)
-        # scaling_param_path = self.cfg.eval.scaling_param_path
-        # surf_factors_path = os.path.join(
-        #     scaling_param_path, "surface_scaling_factors.npy"
+        # surf_mean = np.array(
+        #     self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
         # )
-        # surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        # surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
+        # surf_factors = np.stack([surf_mean, surf_std])
         # surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        surf_factors_path = os.path.join(
+            scaling_param_path, "surface_scaling_factors.npy"
+        )
+        surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        surf_factors = torch.from_numpy(surf_factors).to(self.device)
 
         return surf_factors
 
@@ -861,6 +787,9 @@ class dominoInference:
             (1, 1), stream_velocity, dtype=torch.float32
         ).to(self.device)
 
+    def set_aoa(self, aoa):
+        self.aoa = torch.full((1, 1), aoa, dtype=torch.float32).to(self.device)
+
     def set_stencil_size(self, stencil_size):
         self.stencil_size = stencil_size
 
@@ -947,7 +876,7 @@ class dominoInference:
         num_sample_points=None,
         surface_mesh=None,
         plot_solutions=False,
-        eval_batch_size=256_000,
+        eval_batch_size=1_024_000,
     ):
         total_time = 0.0
 
@@ -991,7 +920,6 @@ class dominoInference:
             surface_coordinates_all = surface_mesh_centers
 
             inner_time = time.time()
-            # start_event.record()
             start_time = time.time()
 
             if num_sample_points is None:
@@ -1015,9 +943,7 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        inlet_velocity=self.stream_velocity,
-                        air_density=self.air_density,
-                        pressure=self.pressure,
+                        aoa=self.aoa,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
             else:
@@ -1041,17 +967,12 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        inlet_velocity=self.stream_velocity,
-                        air_density=self.air_density,
-                        pressure=self.pressure,
+                        aoa=self.aoa,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
 
-            # end_event.record()
             cur_time = time.time() - start_time
-            # end_event.synchronize()
-            # cur_time = start_event.elapsed_time(end_event) / 1000.0
-            print(f"compute_solution time (s): {cur_time:.4f}")
+            print(f"Compute_solution time (s): {cur_time:.4f}")
             total_time += float(time.time() - inner_time)
             surface_solutions_all = surface_solutions
             print(
@@ -1064,7 +985,9 @@ class dominoInference:
         surface_coordinates_all = torch.reshape(
             surface_coordinates_all, (1, num_points, 3)
         )
-        surface_solutions_all = torch.reshape(surface_solutions_all, (1, num_points, 4))
+        surface_solutions_all = torch.reshape(
+            surface_solutions_all, (1, num_points, self.num_surf_vars)
+        )
 
         if self.surf_factors is not None:
             surface_solutions_all = unnormalize(
@@ -1074,12 +997,8 @@ class dominoInference:
         self.out_dict["surface_coordinates"] = (
             0.5 * (surface_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
-        self.out_dict["pressure_surface"] = (
-            surface_solutions_all[:, :, :1] * self.pressure
-        )
-        self.out_dict["wall-shear-stress"] = (
-            surface_solutions_all[:, :, 1:4] * self.pressure
-        )
+        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, :1] * PREF
+        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:] * PREF
         self.sampling_indices = sampling_indices
 
     @torch.inference_mode()
@@ -1088,7 +1007,7 @@ class dominoInference:
         num_sample_points=None,
         point_cloud=None,
         plot_solutions=False,
-        eval_batch_size=128_000,
+        eval_batch_size=1_024_000,
     ):
         if (num_sample_points is None and point_cloud is None) or (
             num_sample_points is not None and point_cloud is not None
@@ -1166,14 +1085,12 @@ class dominoInference:
                     self.grid,
                     self.model,
                     use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
-                    inlet_velocity=self.stream_velocity,
-                    air_density=self.air_density,
-                    pressure=self.pressure,
+                    aoa=self.aoa,
                 )
                 volume_solutions[:, start_idx:end_idx] = volume_solutions_batch
 
                 cur_time = time.time() - start_time
-                print(f"compute_solution time (s): {cur_time:.4f}")
+                print(f"Compute_solution time (s): {cur_time:.4f}")
                 total_time += float(time.time() - inner_time)
                 print(
                     "Time taken for compute solution in volume for =%f, %f"
@@ -1202,77 +1119,10 @@ class dominoInference:
             0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
 
-        self.out_dict["pressure"] = volume_solutions_all[:, :, 0:1] * self.pressure
-        self.out_dict["velocity"] = (
-            volume_solutions_all[:, :, 1:4] * self.stream_velocity
-        )
+        self.out_dict["pressure"] = volume_solutions_all[:, :, 0:1] * PREF
+        self.out_dict["velocity"] = volume_solutions_all[:, :, 1:4] * UINFTY
         self.out_dict["turbulent-kinetic-energy"] = self.out_dict["pressure"]
         self.out_dict["turbulent-viscosity"] = self.out_dict["pressure"]
-
-        if plot_solutions:
-            print("Plotting solutions")
-            plot_save_path = os.path.join(self.cfg.output, "plots/contours/")
-            create_directory(plot_save_path)
-
-            p_grid = 0.5 * (self.grid + 1.0) * (cmax - cmin) + cmin
-            p_grid = p_grid.cpu().numpy()
-            sdf_grid = self.sdf_grid.cpu().numpy()
-            volume_coordinates_all = (
-                0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
-            )
-            volume_solutions_all[:, :, :1] = (
-                volume_solutions_all[:, :, :3] * self.stream_velocity
-            )
-            volume_solutions_all[:, :, 1:] = (
-                volume_solutions_all[:, :, 3:4]
-                * self.stream_velocity**2.0
-                * self.air_density
-            )
-           
-            volume_coordinates_all = volume_coordinates_all.cpu().numpy()
-            volume_solutions_all = volume_solutions_all.cpu().numpy()
-
-            # ND interpolation on a grid
-            prediction_grid = nd_interpolator(
-                volume_coordinates_all, volume_solutions_all[0], p_grid[0]
-            )
-            nx, ny, nz, vars = prediction_grid.shape
-            idx = np.where(sdf_grid[0] < 0.0)
-            prediction_grid[idx] = float("inf")
-            axes_titles = ["y/4 plane", "y/2 plane"]
-
-            plot(
-                prediction_grid[:, int(ny / 4), :, 0],
-                prediction_grid[:, int(ny / 2), :, 0],
-                var="x-vel",
-                save_path=plot_save_path + f"x-vel-midplane_{self.stream_velocity}.png",
-                axes_titles=axes_titles,
-                plot_error=False,
-            )
-            plot(
-                prediction_grid[:, int(ny / 4), :, 1],
-                prediction_grid[:, int(ny / 2), :, 1],
-                var="y-vel",
-                save_path=plot_save_path + f"y-vel-midplane_{self.stream_velocity}.png",
-                axes_titles=axes_titles,
-                plot_error=False,
-            )
-            plot(
-                prediction_grid[:, int(ny / 4), :, 2],
-                prediction_grid[:, int(ny / 2), :, 2],
-                var="z-vel",
-                save_path=plot_save_path + f"z-vel-midplane_{self.stream_velocity}.png",
-                axes_titles=axes_titles,
-                plot_error=False,
-            )
-            plot(
-                prediction_grid[:, int(ny / 4), :, 3],
-                prediction_grid[:, int(ny / 2), :, 3],
-                var="pres",
-                save_path=plot_save_path + f"pres-midplane_{self.stream_velocity}.png",
-                axes_titles=axes_titles,
-                plot_error=False,
-            )
 
     def cold_start(self, cached_geom_path=None):
         print("Cold start")
@@ -1308,25 +1158,6 @@ class dominoInference:
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
 
-        # encoding_g = torch.cat((encoding_g_vol, encoding_g_surf), axis=1)
-
-        # if self.world_size == 1:
-        #     encoding_g_surf = model.combined_unet_surf(encoding_g)
-        #     encoding_g_vol = model.combined_unet_vol(encoding_g)
-        # else:
-        #     encoding_g_surf = model.module.combined_unet_surf(encoding_g)
-        #     encoding_g_vol = model.module.combined_unet_vol(encoding_g)
-
-        # if self.world_size == 1:
-        #     encoding_g_surf1 = model.geo_rep_surface1(geo_centers_surf, s_grid, sdf_surf_grid)
-        # else:
-        #     encoding_g_surf1 = model.module.geo_rep_surface1(
-        #         geo_centers_surf, s_grid, sdf_surf_grid
-        #     )
-
-        # geo_encoding = 0.5 * encoding_g_surf1 + 0.5 * encoding_g_vol
-        # geo_encoding_surface = 0.5 * encoding_g_surf
-
         return 0.5 * encoding_g_vol, 0.5 * encoding_g_surf
 
     @torch.no_grad()
@@ -1342,21 +1173,15 @@ class dominoInference:
         pos_normals_com,
         s_grid,
         model,
-        inlet_velocity,
-        air_density,
-        pressure,
+        aoa,
     ):
-        global_params_values = torch.cat(
-            (inlet_velocity, air_density, pressure), axis=1
-        )  # (1, 3)
-        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 3, 1)
+        global_params_values = aoa
+        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 1, 1)
 
-        global_params_reference = torch.cat(
-            (inlet_velocity, air_density, pressure), axis=1
-        )  # (1, 3)
+        global_params_reference = self.aoa_reference
         global_params_reference = torch.unsqueeze(
             global_params_reference, -1
-        )  # (1, 3, 1)
+        )  # (1, 1, 1)
 
         if self.world_size == 1:
             geo_encoding_local = model.geo_encoding_local(
@@ -1383,6 +1208,7 @@ class dominoInference:
                 surface_neighbors_areas,
                 global_params_values,
                 global_params_reference,
+                num_sample_points=self.stencil_size,
             )
         else:
             pos_encoding = model.module.position_encoder(
@@ -1399,6 +1225,7 @@ class dominoInference:
                 surface_neighbors_areas,
                 global_params_values,
                 global_params_reference,
+                num_sample_points=self.stencil_size,
             )
 
         return tpredictions_batch
@@ -1414,22 +1241,16 @@ class dominoInference:
         p_grid,
         model,
         use_sdf_basis,
-        inlet_velocity,
-        air_density,
-        pressure,
+        aoa,
     ):
         ## Global parameters
-        global_params_values = torch.cat(
-            (inlet_velocity, air_density, pressure), axis=1
-        )  # (1, 3)
-        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 3, 1)
+        global_params_values = aoa
+        global_params_values = torch.unsqueeze(global_params_values, -1)  # (1, 1, 1)
 
-        global_params_reference = torch.cat(
-            (inlet_velocity, air_density, pressure), axis=1
-        )  # (1, 3)
+        global_params_reference = self.aoa_reference  # (1, 1)
         global_params_reference = torch.unsqueeze(
             global_params_reference, -1
-        )  # (1, 3, 1)
+        )  # (1, 1, 1)
 
         if self.world_size == 1:
             geo_encoding_local = model.geo_encoding_local(
@@ -1472,6 +1293,7 @@ class dominoInference:
             )
         return tpredictions_batch
 
+
 if __name__ == "__main__":
     OmegaConf.register_new_resolver("eval", eval)
     with initialize(version_base="1.3", config_path="conf"):
@@ -1489,27 +1311,46 @@ if __name__ == "__main__":
     num_files = int(len(dirnames) / 1)
     dirnames_per_gpu = dirnames[int(num_files * dev_id) : int(num_files * (dev_id + 1))]
 
+    # Output directory for predictions (following test.py pattern)
+    pred_save_path = cfg.eval.save_path
+
     domino = dominoInference(cfg, dist, False)
-    domino.initialize_model(
-        model_path="/lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_Full_Data/1/models/DoMINO.0.659.pt")
+
+    # Load model checkpoint from config (following test.py pattern)
+    model_path = os.path.join(cfg.resume_dir, cfg.eval.checkpoint_name)
+    domino.initialize_model(model_path=model_path)
 
     for count, dirname in enumerate(dirnames_per_gpu):
         print(f"Processing sample {dirname}")
-        dir_path = os.path.join(input_path, dirname)
+        filepath = os.path.join(input_path, dirname)
 
-        stl_filepath = os.path.join(dir_path, "merged_surfaces.stl")
-        vtu_path = os.path.join(dir_path, "merged_volumes.vtu")
+        # Extract tag for output naming (e.g., "LHC001_AoA_22")
+        tag = re.findall(r"(LHC\d{3}_AoA_\d+)", dirname)[0]
 
-        STREAM_VELOCITY = 148.25
-        STENCIL_SIZE = 20 # 20 is default value in test.py
+        # Input STL file path following test.py pattern
+        stl_filepath = os.path.join(filepath, f"{dirname}.stl")
+        vtu_filepath = os.path.join(filepath, "volume_" + f"{dirname}.vtu")
+
+        # Extract AoA from directory name
+        aoa_match = re.search(r"AoA_(\d+(?:\.\d+)?)", dirname)
+        if aoa_match:
+            AOA = np.float32(aoa_match.group(1))
+        else:
+            raise ValueError(f"Could not extract AoA from folder name: {dirname}")
+
+        STENCIL_SIZE = 20  # 20 is default value in test.py
+        STREAM_VELOCITY = AOA  # Using AoA value as stream velocity proxy
 
         domino.set_stl_path(stl_filepath)
+        ## TODO: Remove one of these later
         domino.set_stream_velocity(STREAM_VELOCITY)
+        domino.set_aoa(AOA)  # Set AoA explicitly for global parameters
+
         domino.set_stencil_size(STENCIL_SIZE)
 
-        # # Get the unstructured grid data for VTU output
+        #### Get the unstructured grid data for VTU output
         reader = vtk.vtkXMLUnstructuredGridReader()
-        reader.SetFileName(vtu_path)
+        reader.SetFileName(vtu_filepath)
         reader.Update()
         polydata = reader.GetOutput()
         volume_coordinates, volume_fields = get_volume_data(
@@ -1528,57 +1369,78 @@ if __name__ == "__main__":
         )
 
         domino.read_stl()
-
         domino.initialize_data_processor()
-
-        # Calculate geometry encoding
         domino.compute_geo_encoding()
+        domino.compute_surface_solutions()
 
-        # Calculate volume solutions
-        # For NIM
+        ### Calculate volume solutions
+
+        ## For NIM deployment
         # domino.compute_volume_solutions(
-        #     num_sample_points=10_256_000, plot_solutions=False
+        #     num_sample_points=10_240_000, plot_solutions=False
         # )
-        
-        # For validation with predefined test VTU file 
+
+        ## For validation with predefined test VTU file
         domino.compute_volume_solutions(
             num_sample_points=None, point_cloud=volume_coordinates, plot_solutions=False
         )
 
-        # Calculate surface solutions
-        domino.compute_surface_solutions()
+        # domino.compute_forces()
 
-        #domino.compute_forces()
-        
         out_dict = domino.get_out_dict()
-        
-        vtp_out_path = f"/lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtp"
-        vtu_out_path = f"/lustre/users/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/infer_{dirname}.vtu"
-        
-        domino.mesh_stl.save(vtp_out_path)
 
-        reader = vtk.vtkXMLPolyDataReader()
-        reader.SetFileName(f"{vtp_out_path}")
-        reader.Update()
-        polydata_surf = reader.GetOutput()
-        surfParam_vtk = numpy_support.numpy_to_vtk(out_dict["pressure_surface"][0].cpu().numpy())
-        surfParam_vtk.SetName(f"Pressure")
-        polydata_surf.GetCellData().AddArray(surfParam_vtk)
-        surfParam_vtk = numpy_support.numpy_to_vtk(out_dict["wall-shear-stress"][0].cpu().numpy())
-        surfParam_vtk.SetName(f"Wall-shear-stress")
-        polydata_surf.GetCellData().AddArray(surfParam_vtk)
-        write_to_vtp(polydata_surf, vtp_out_path)
-        print('Write to VTP done for ', dirname)
+        surface_variable_names = list(cfg.variables.surface.solution.keys())
+        volume_variable_names = list(cfg.variables.volume.solution.keys())
 
-        volume_fields_predicted = torch.cat((out_dict["pressure"], out_dict["velocity"]), axis=-1)[0].cpu().numpy()
-        volume_fields_predicted[ids_in_bbox] = 0.0
-        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 0:1])
-        volParam_vtk.SetName(f"PressurePred")
-        polydata.GetPointData().AddArray(volParam_vtk)
-        volParam_vtk = numpy_support.numpy_to_vtk(volume_fields_predicted[:, 1:])
-        volParam_vtk.SetName(f"VelocityPred")
-        polydata.GetPointData().AddArray(volParam_vtk)
-        write_to_vtu(polydata, vtu_out_path)
-        print('Write to VTU done for ', dirname)
+        vtp_out_path = os.path.join(pred_save_path, f"boundary_{tag}_predicted.vtp")
+        npz_out_path = os.path.join(pred_save_path, f"volume_{tag}_predicted.npz")
+
+        # ===== WRITE SURFACE VTU (following test.py pattern) =====
+        # Use the mesh_stl from domino (pyvista mesh), add predictions as cell data
+        mesh_surf = domino.mesh_stl.copy()
+
+        # Add prediction arrays to mesh cell data (following test.py pattern)
+        mesh_surf[f"{surface_variable_names[0]}Pred"] = (
+            out_dict["pressure_surface"][0].cpu().numpy().astype(np.float32)
+        )
+        mesh_surf[f"{surface_variable_names[1]}Pred"] = (
+            out_dict["wall-shear-stress"][0].cpu().numpy().astype(np.float32)
+        )
+
+        # Convert back to point data before saving (following test.py pattern)
+        mesh_surf_with_point_data = mesh_surf.cell_data_to_point_data()
+
+        # Save the mesh with predictions as VTU (using point data)
+        mesh_surf_with_point_data.save(vtp_out_path)
+        print(f"Write surface VTU done for {tag}")
+
+        # ===== WRITE VOLUME VTU (following test.py pattern) =====
+        # Create a clean pyvista PointCloud with volume coordinates and predictions only (no ground truth)
+        volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
+        volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
+        volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
+
+        # Zero out predictions outside bounding box (optional filter)
+        c_min = cfg.data.bounding_box.min
+        c_max = cfg.data.bounding_box.max
+        ids_in_bbox = np.where(
+            (volume_coords[:, 0] < c_min[0])
+            | (volume_coords[:, 0] > c_max[0])
+            | (volume_coords[:, 1] < c_min[1])
+            | (volume_coords[:, 1] > c_max[1])
+            | (volume_coords[:, 2] < c_min[2])
+            | (volume_coords[:, 2] > c_max[2])
+        )
+        volume_pressure[ids_in_bbox] = 0.0
+        volume_velocity[ids_in_bbox] = 0.0
+
+        # Save the volume npz with predictions
+        vol_dict = {}
+        vol_dict["coordinates"] = volume_coords
+        vol_dict["pressure"] = volume_pressure
+        vol_dict["velocity"] = volume_velocity
+        np.savez(npz_out_path,**vol_dict)
+
+        print(f"Write volume NPZ done for {tag}")
 
     exit()

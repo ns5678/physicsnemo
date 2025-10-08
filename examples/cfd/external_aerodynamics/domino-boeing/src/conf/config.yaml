@@ -95,7 +95,7 @@ model:
   activation: "relu" # "relu" or "gelu"
   loss_function: 
     loss_type: "mse" # mse or rmse
-    area_weighing_factor: 10000 # Generally inverse of maximum area
+    area_weighing_factor: 1 # Generally inverse of maximum area
   interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
   positional_encoding: false # calculate positional encoding?
@@ -200,9 +200,9 @@ val:
 # └───────────────────────────────────────────┘  
 # Testing configurable parameters
 eval:
-  test_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inference-nim/ # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/snidhan/gtc-dc-demo-2025/lc-data/inferred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.499.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /lustre/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino_luminary_cloud/src/outputs/LC_Dataset_No_Integral_Loss_1_3/
+  test_path: /lustre/users/snidhan/nim-stl-test/ # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/users/snidhan/pred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.163.pt # Name of checkpoint to select from saved checkpoints
+  scaling_param_path: /lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino-boeing/src/outputs/Boeing_Run
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
