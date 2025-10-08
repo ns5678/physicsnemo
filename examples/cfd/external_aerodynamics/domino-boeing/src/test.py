@@ -844,85 +844,32 @@ def main(cfg: DictConfig):
                 np.float32
             )
 
-            # Convert back to point data before saving to avoid ParaView GPU texture buffer limits
             mesh_with_point_data = mesh.cell_data_to_point_data()
 
-            # Save the mesh with predictions as VTU (using point data)
             mesh_with_point_data.save(vtp_pred_save_path)
 
-        # if prediction_vol is not None:
+        if prediction_vol is not None:
 
-        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
-        #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
+            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+            polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
-        #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
+            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+            polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-        #     # Debug: Analyze polydata_vol before writing
-        #     print(f"\n[DEBUG] ===== POLYDATA_VOL ANALYSIS BEFORE WRITE_TO_VTU =====")
-        #     print(f"[DEBUG] Number of points: {polydata_vol.GetNumberOfPoints():,}")
-        #     print(f"[DEBUG] Number of cells: {polydata_vol.GetNumberOfCells():,}")
+            # Convert polydata (point cloud) to unstructured grid for VTU format
+            # VTU requires vtkUnstructuredGrid, not vtkPolyData
+            unstructured_grid = vtk.vtkUnstructuredGrid()
+            unstructured_grid.SetPoints(polydata_vol.GetPoints())
 
-        #     # Analyze point data arrays
-        #     point_data = polydata_vol.GetPointData()
-        #     num_arrays = point_data.GetNumberOfArrays()
-        #     print(f"[DEBUG] Number of point data arrays: {num_arrays}")
+            # Copy all point data arrays
+            point_data_source = polydata_vol.GetPointData()
+            point_data_dest = unstructured_grid.GetPointData()
+            for i in range(point_data_source.GetNumberOfArrays()):
+                point_data_dest.AddArray(point_data_source.GetArray(i))
 
-        #     total_memory_mb = 0.0
-        #     for i in range(num_arrays):
-        #         array = point_data.GetArray(i)
-        #         array_name = array.GetName()
-        #         num_tuples = array.GetNumberOfTuples()
-        #         num_components = array.GetNumberOfComponents()
-        #         data_type = array.GetDataType()
-
-        #         # Estimate memory usage (assuming float32 = 4 bytes, float64 = 8 bytes, int32 = 4 bytes, etc.)
-        #         if data_type == vtk.VTK_FLOAT: # VTK_FLOAT = 10
-        #             bytes_per_element = 4
-        #         elif data_type == vtk.VTK_DOUBLE:
-        #             bytes_per_element = 8
-        #         elif data_type == vtk.VTK_INT:
-        #             bytes_per_element = 4
-        #         elif data_type == vtk.VTK_LONG:
-        #             bytes_per_element = 8
-        #         else:
-        #             bytes_per_element = 4  # default estimate
-
-        #         array_memory_mb = (num_tuples * num_components * bytes_per_element) / (1024 * 1024)
-        #         total_memory_mb += array_memory_mb
-
-        #         print(f"[DEBUG]   Array {i}: '{array_name}' - {num_tuples:,} tuples x {num_components} components, "
-        #               f"type={data_type}, ~{array_memory_mb:.2f} MB")
-
-        #     # Estimate geometry memory (points and cells)
-        #     points = polydata_vol.GetPoints()
-        #     if points:
-        #         points_memory_mb = (polydata_vol.GetNumberOfPoints() * 3 * 4) / (1024 * 1024)  # 3 coords * 4 bytes
-        #         total_memory_mb += points_memory_mb
-        #         print(f"[DEBUG] Points geometry: ~{points_memory_mb:.2f} MB")
-
-        #     print(f"[DEBUG] TOTAL ESTIMATED MEMORY: ~{total_memory_mb:.2f} MB ({total_memory_mb/1024:.2f} GB)")
-        #     print(f"[DEBUG] ========================================================\n")
-
-        #     # Convert polydata (point cloud) to unstructured grid for VTU format
-        #     # VTU requires vtkUnstructuredGrid, not vtkPolyData
-        #     unstructured_grid = vtk.vtkUnstructuredGrid()
-        #     unstructured_grid.SetPoints(polydata_vol.GetPoints())
-
-        #     # Copy all point data arrays
-        #     point_data_source = polydata_vol.GetPointData()
-        #     point_data_dest = unstructured_grid.GetPointData()
-        #     for i in range(point_data_source.GetNumberOfArrays()):
-        #         point_data_dest.AddArray(point_data_source.GetArray(i))
-
-        #     # Time the actual write operation
-        #     print(f"[DEBUG] Starting write_to_vtu operation...")
-        #     write_start_time = time.time()
-        #     write_to_vtu(unstructured_grid, vtu_pred_save_path)
-        #     write_time = time.time() - write_start_time
-        #     print(f"[DEBUG] write_to_vtu completed in: {write_time:.3f} seconds")
+            write_to_vtu(unstructured_grid, vtu_pred_save_path)
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4
