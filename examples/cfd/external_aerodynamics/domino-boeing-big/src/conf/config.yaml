@@ -40,8 +40,8 @@ resume_dir: ${output}/models
 # Data processor configurable parameters
 data_processor:
   kind: boeing_data # must be either drivesim or drivaer_aws
-  output_dir: /lustre/high-lift/train/
-  input_dir: /lustre/datasets/HiLiftAeroMLMini/
+  output_dir: /lustre/datasets/HiLiftAeroML-Processed-DC-Demo/
+  input_dir: /lustre/users/nashton/cadence/HiLiftAeroML
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
   num_processors: 24
