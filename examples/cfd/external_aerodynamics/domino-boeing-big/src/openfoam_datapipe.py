@@ -58,6 +58,31 @@ class BoeingPaths:
         if len(boundary_files) == 0:
             raise FileNotFoundError(f"No boundary_*.vtu file found in {car_dir}")
         return boundary_files[0]
+    
+    @staticmethod
+    def is_complete(car_dir: Path, model_type: str = "combined") -> bool:
+        """Check if a folder has all required files based on model type."""
+        try:
+            # Always need STL file
+            stl_files = list(car_dir.glob("*.stl"))
+            if len(stl_files) == 0:
+                return False
+            
+            # Check for volume files if needed
+            if model_type in ["volume", "combined"]:
+                volume_files = list(car_dir.glob("volume_*.vtu"))
+                if len(volume_files) == 0:
+                    return False
+            
+            # Check for surface files if needed
+            if model_type in ["surface", "combined"]:
+                boundary_files = list(car_dir.glob("boundary_*.vtu"))
+                if len(boundary_files) == 0:
+                    return False
+            
+            return True
+        except Exception:
+            return False
 
 ## TODO: Change the name of the class to better match the actual dataset/propagate changes 
 class OpenFoamDataset(Dataset):
@@ -93,6 +118,7 @@ class OpenFoamDataset(Dataset):
         assert self.data_path.exists(), f"Path {self.data_path} does not exist"
         assert self.data_path.is_dir(), f"Path {self.data_path} is not a directory"
 
+        self.model_type = model_type
         self.filenames = get_filenames(self.data_path)
         
         # Filter out folders named "sample" and .py files
@@ -100,6 +126,21 @@ class OpenFoamDataset(Dataset):
             fname for fname in self.filenames 
             if fname != "sample" and not fname.endswith(".py")
         ]
+        
+        # Filter out incomplete folders that don't have all required files
+        print(f"Checking {len(self.filenames)} folders for required files...")
+        complete_filenames = []
+        skipped_count = 0
+        for fname in self.filenames:
+            car_dir = self.data_path / fname
+            if car_dir.is_dir() and self.path_getter.is_complete(car_dir, model_type):
+                complete_filenames.append(fname)
+            else:
+                print(f"Skipping incomplete folder: {fname}")
+                skipped_count += 1
+        
+        self.filenames = complete_filenames
+        print(f"Found {len(self.filenames)} complete folders, skipped {skipped_count} incomplete folders")        
         
         random.shuffle(self.filenames)
         self.indices = np.array(len(self.filenames))
@@ -111,7 +152,6 @@ class OpenFoamDataset(Dataset):
         self.AoA = self.global_params_reference["AoA"]
         self.kind = kind
         self.device = device
-        self.model_type = model_type
 
     def __len__(self):
         return len(self.filenames)
