@@ -67,6 +67,7 @@ except:
 PREF = np.float32(176.352)
 UINFTY = np.float32(2679.505)
 
+
 @wp.kernel
 def _bvh_query_distance(
     mesh: wp.uint64,
@@ -245,6 +246,160 @@ class inferenceDataPipe:
         del self.data_dict["pos_enc_closest"]
         del self.data_dict["pos_normals_com"]
         del self.data_dict["sdf_nodes"]
+
+    def _generate_volume_coordinates(
+        self,
+        num_pts_vol,
+        c_min,
+        c_max,
+        bounding_box_nested=None,
+        bounding_box_percentages=None,
+        sample_nested=False,
+    ):
+        """
+        Generate volume coordinates with optional hierarchical nested sampling.
+
+        Args:
+            num_pts_vol: Number of points to generate
+            c_min: Minimum coordinates of main bounding box
+            c_max: Maximum coordinates of main bounding box
+            bounding_box_nested: Optional list of nested bounding boxes (tightest to loosest)
+            bounding_box_percentages: Optional list of percentages for each nested box
+            sample_nested: Whether to use hierarchical nested sampling
+
+        Returns:
+            torch.Tensor: Generated volume coordinates
+        """
+        # Hierarchical nested sampling with configurable percentages
+        if (
+            sample_nested
+            and bounding_box_nested is not None
+            and len(bounding_box_nested) > 0
+        ):
+            num_boxes = len(bounding_box_nested)
+
+            # Use provided percentages or default to equal distribution
+            if (
+                bounding_box_percentages is not None
+                and len(bounding_box_percentages) == num_boxes
+            ):
+                percentages = bounding_box_percentages
+            else:
+                num_regions = num_boxes + 1
+                equal_pct = 100.0 / num_regions
+                percentages = [equal_pct] * num_boxes
+
+            # Calculate outermost region percentage
+            total_pct = sum(percentages)
+            outer_pct = 100.0 - total_pct
+
+            all_samples = []
+            # For each nested box level
+            for i in range(num_boxes):
+                box_min = bounding_box_nested[i][0]
+                box_max = bounding_box_nested[i][1]
+                pct = percentages[i]
+                num_pts_level = int(num_pts_vol * pct / 100.0)
+
+                if i == 0:
+                    # Innermost box: sample uniformly inside
+                    samples_level = (box_max - box_min) * torch.rand(
+                        num_pts_level, 3, device=self.device, dtype=torch.float32
+                    ) + box_min
+                    all_samples.append(samples_level)
+                else:
+                    # Sample outside previous box but inside current box
+                    prev_box_min = bounding_box_nested[i - 1][0]
+                    prev_box_max = bounding_box_nested[i - 1][1]
+                    samples_level = self._rejection_sample_between_boxes(
+                        num_pts_level, box_min, box_max, prev_box_min, prev_box_max
+                    )
+                    all_samples.append(samples_level)
+
+            # Sample outermost region: outside last nested box but inside main bbox
+            num_pts_remaining = num_pts_vol - sum([s.shape[0] for s in all_samples])
+            last_box_min = bounding_box_nested[-1][0]
+            last_box_max = bounding_box_nested[-1][1]
+            samples_outer = self._rejection_sample_between_boxes(
+                num_pts_remaining, c_min, c_max, last_box_min, last_box_max
+            )
+            all_samples.append(samples_outer)
+
+            # Combine all samples
+            volume_coordinates_sub = torch.cat(all_samples, dim=0)
+
+            # Shuffle to randomize order of points from different nested levels
+            shuffle_idx = torch.randperm(
+                volume_coordinates_sub.shape[0], device=self.device
+            )
+            volume_coordinates_sub = volume_coordinates_sub[shuffle_idx]
+        else:
+            # Original sampling: uniform in main bounding box
+            volume_coordinates_sub = (c_max - c_min) * torch.rand(
+                num_pts_vol, 3, device=self.device, dtype=torch.float32
+            ) + c_min
+
+        return volume_coordinates_sub
+
+    def _rejection_sample_between_boxes(
+        self,
+        num_pts_target,
+        outer_box_min,
+        outer_box_max,
+        inner_box_min,
+        inner_box_max,
+    ):
+        """
+        Sample points in outer box but excluding inner box using rejection sampling.
+
+        Args:
+            num_pts_target: Number of points to generate
+            outer_box_min: Minimum coordinates of outer box
+            outer_box_max: Maximum coordinates of outer box
+            inner_box_min: Minimum coordinates of inner box (to exclude)
+            inner_box_max: Maximum coordinates of inner box (to exclude)
+
+        Returns:
+            torch.Tensor: Sampled coordinates
+        """
+        # Handle edge case where no points are needed
+        if num_pts_target <= 0:
+            return torch.zeros((0, 3), device=self.device, dtype=torch.float32)
+        
+        samples_list = []
+        num_collected = 0
+
+        while num_collected < num_pts_target:
+            # Oversample by 2x to account for rejections
+            num_to_sample = int(2.0 * (num_pts_target - num_collected))
+            
+            candidates = (outer_box_max - outer_box_min) * torch.rand(
+                num_to_sample, 3, device=self.device, dtype=torch.float32
+            ) + outer_box_min
+
+            # Filter out points inside inner bounding box
+            outside_inner = (
+                (candidates[:, 0] < inner_box_min[0])
+                | (candidates[:, 0] > inner_box_max[0])
+                | (candidates[:, 1] < inner_box_min[1])
+                | (candidates[:, 1] > inner_box_max[1])
+                | (candidates[:, 2] < inner_box_min[2])
+                | (candidates[:, 2] > inner_box_max[2])
+            )
+
+            valid_candidates = candidates[outside_inner]
+            num_valid = valid_candidates.shape[0]
+
+            if num_valid > 0:
+                num_to_add = min(num_valid, num_pts_target - num_collected)
+                samples_list.append(valid_candidates[:num_to_add])
+                num_collected += num_to_add
+        
+        # Handle edge case where no valid samples were collected
+        if len(samples_list) == 0:
+            return torch.zeros((0, 3), device=self.device, dtype=torch.float32)
+
+        return torch.cat(samples_list, dim=0)
 
     def create_grid_torch(self, mx, mn, nres):
         start_time = time.time()
@@ -452,6 +607,9 @@ class inferenceDataPipe:
         max_min=None,
         center_of_mass=None,
         bounding_box=None,
+        bounding_box_nested=None,
+        bounding_box_percentages=None,
+        sample_nested=False,
     ):
         if bounding_box is not None:
             c_max = bounding_box[1]
@@ -464,14 +622,21 @@ class inferenceDataPipe:
 
         if num_points_vol is not None:
             for k in range(10):
+                print("k ", k)
                 if k > 0:
                     num_pts_vol = num_points_vol - int(volume_coordinates.shape[0] / 2)
                 else:
                     num_pts_vol = int(1.25 * num_points_vol)
 
-                volume_coordinates_sub = (c_max - c_min) * torch.rand(
-                    num_pts_vol, 3, device=self.device, dtype=torch.float32
-                ) + c_min
+                # Generate volume coordinates with optional hierarchical nested sampling
+                volume_coordinates_sub = self._generate_volume_coordinates(
+                    num_pts_vol,
+                    c_min,
+                    c_max,
+                    bounding_box_nested,
+                    bounding_box_percentages,
+                    sample_nested,
+                )
 
                 sdf_module = SignedDistanceFieldModule(
                     self.surface_vertices, self.surface_indices, device=self.device
@@ -485,6 +650,7 @@ class inferenceDataPipe:
 
                 idx = torch.unsqueeze(torch.where((sdf_nodes > 0))[0], -1)
                 idx = idx.repeat(1, volume_coordinates_sub.shape[1])
+
                 if k == 0:
                     volume_coordinates = torch.gather(volume_coordinates_sub, 0, idx)
                 else:
@@ -493,7 +659,7 @@ class inferenceDataPipe:
                         (volume_coordinates, volume_coordinates_1), axis=0
                     )
 
-                if volume_coordinates.shape[0] > num_points_vol:
+                if volume_coordinates.shape[0] >= num_points_vol:
                     volume_coordinates = volume_coordinates[:num_points_vol]
                     break
         else:
@@ -576,6 +742,8 @@ class dominoInference:
         self.vol_factors = None
         self.bounding_box_min_max = None
         self.bounding_box_surface_min_max = None
+        self.bounding_box_nested = None  # List of nested bounding boxes
+        self.bounding_box_percentages = None  # List of percentages for each nested box
         self.center_of_mass = None
         self.grid = None
         self.geometry_encoding = None
@@ -633,6 +801,61 @@ class dominoInference:
                 np.array(self.cfg.data.bounding_box_surface.max, dtype=np.float32)
             ).to(self.device)
             self.bounding_box_surface_min_max = [c_min, c_max]
+
+        # Load nested bounding boxes for hierarchical sampling
+        if hasattr(self.cfg.data, "bounding_box_nested"):
+            nested_boxes = []
+            percentages = []
+
+            # Dynamically iterate over all nested boxes
+            nested_config = self.cfg.data.bounding_box_nested
+            box_names = sorted(
+                [name for name in dir(nested_config) if name.startswith("box")]
+            )
+
+            for box_name in box_names:
+                box = getattr(nested_config, box_name)
+                if hasattr(box, "min") and hasattr(box, "max"):
+                    if box.min is not None and box.max is not None:
+                        c_min = torch.from_numpy(
+                            np.array(box.min, dtype=np.float32)
+                        ).to(self.device)
+                        c_max = torch.from_numpy(
+                            np.array(box.max, dtype=np.float32)
+                        ).to(self.device)
+                        nested_boxes.append([c_min, c_max])
+
+                        # Load percentage if available, otherwise use equal distribution
+                        if hasattr(box, "percentage") and box.percentage is not None:
+                            percentages.append(float(box.percentage))
+                        else:
+                            percentages.append(None)  # Will be computed later
+
+            if len(nested_boxes) > 0:
+                self.bounding_box_nested = nested_boxes
+
+                # Handle percentages: if any are None, distribute equally
+                if None in percentages:
+                    num_regions = len(nested_boxes) + 1
+                    equal_pct = 100.0 / num_regions
+                    percentages = [equal_pct] * len(nested_boxes)
+
+                self.bounding_box_percentages = percentages
+
+                # Validate percentages sum to <= 100
+                total_pct = sum(percentages)
+                if total_pct > 100.0:
+                    raise ValueError(
+                        f"Sum of nested box percentages ({total_pct}%) exceeds 100%. "
+                        f"Please adjust the percentages in config."
+                    )
+
+                print(
+                    f"Loaded {len(nested_boxes)} nested bounding boxes with percentages: {percentages}"
+                )
+                print(
+                    f"Outermost region will receive {100.0 - total_pct:.1f}% of points"
+                )
 
     def load_volume_scaling_factors(self):
         # vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
@@ -1006,8 +1229,10 @@ class dominoInference:
         self,
         num_sample_points=None,
         point_cloud=None,
+        point_cloud_sampled=None,
         plot_solutions=False,
         eval_batch_size=1_024_000,
+        sample_nested=False,
     ):
         if (num_sample_points is None and point_cloud is None) or (
             num_sample_points is not None and point_cloud is not None
@@ -1025,7 +1250,14 @@ class dominoInference:
         if num_sample_points is not None:
             num_points = num_sample_points
         else:
-            num_points = point_cloud.shape[0]
+            if point_cloud_sampled is not None:
+                num_points = point_cloud_sampled
+                idx = np.random.choice(
+                    point_cloud.shape[0], point_cloud_sampled, replace=False
+                )
+                point_cloud = point_cloud[idx]
+            else:
+                num_points = point_cloud.shape[0]
 
         subdomain_points = int(np.floor(num_points / point_batch_size))
         volume_solutions = torch.zeros(1, num_points, self.num_vol_vars).to(self.device)
@@ -1037,6 +1269,10 @@ class dominoInference:
             if end_idx > num_points:
                 point_batch_size = num_points - start_idx
                 end_idx = num_points
+            
+            # Skip if no points to process in this batch
+            if point_batch_size <= 0:
+                break
 
             if point_cloud is not None:
                 point_cloud_sub = point_cloud[start_idx:end_idx]
@@ -1055,6 +1291,9 @@ class dominoInference:
                         num_points_vol=point_batch_size,
                         max_min=self.bounding_box_min_max,
                         center_of_mass=self.center_of_mass,
+                        bounding_box_nested=self.bounding_box_nested,
+                        bounding_box_percentages=self.bounding_box_percentages,
+                        sample_nested=sample_nested,
                     )
                 else:
                     (
@@ -1349,24 +1588,24 @@ if __name__ == "__main__":
         domino.set_stencil_size(STENCIL_SIZE)
 
         #### Get the unstructured grid data for VTU output
-        reader = vtk.vtkXMLUnstructuredGridReader()
-        reader.SetFileName(vtu_filepath)
-        reader.Update()
-        polydata = reader.GetOutput()
-        volume_coordinates, volume_fields = get_volume_data(
-            polydata, cfg.variables.volume.solution.keys()
-        )
-        volume_fields = np.concatenate(volume_fields, axis=-1)
-        c_min = cfg.data.bounding_box.min
-        c_max = cfg.data.bounding_box.max
-        ids_in_bbox = np.where(
-            (volume_coordinates[:, 0] < c_min[0])
-            | (volume_coordinates[:, 0] > c_max[0])
-            | (volume_coordinates[:, 1] < c_min[1])
-            | (volume_coordinates[:, 1] > c_max[1])
-            | (volume_coordinates[:, 2] < c_min[2])
-            | (volume_coordinates[:, 2] > c_max[2])
-        )
+        # reader = vtk.vtkXMLUnstructuredGridReader()
+        # reader.SetFileName(vtu_filepath)
+        # reader.Update()
+        # polydata = reader.GetOutput()
+        # volume_coordinates, volume_fields = get_volume_data(
+        #     polydata, cfg.variables.volume.solution.keys()
+        # )
+        # volume_fields = np.concatenate(volume_fields, axis=-1)
+        # c_min = cfg.data.bounding_box.min
+        # c_max = cfg.data.bounding_box.max
+        # ids_in_bbox = np.where(
+        #     (volume_coordinates[:, 0] < c_min[0])
+        #     | (volume_coordinates[:, 0] > c_max[0])
+        #     | (volume_coordinates[:, 1] < c_min[1])
+        #     | (volume_coordinates[:, 1] > c_max[1])
+        #     | (volume_coordinates[:, 2] < c_min[2])
+        #     | (volume_coordinates[:, 2] > c_max[2])
+        # )
 
         domino.read_stl()
         domino.initialize_data_processor()
@@ -1375,15 +1614,16 @@ if __name__ == "__main__":
 
         ### Calculate volume solutions
 
-        ## For NIM deployment
-        # domino.compute_volume_solutions(
-        #     num_sample_points=10_240_000, plot_solutions=False
-        # )
+        ## For NIM deployment with hierarchical nested sampling
+        domino.compute_volume_solutions(
+            num_sample_points=1_024_000, plot_solutions=False, sample_nested=True
+        )
 
         ## For validation with predefined test VTU file
-        domino.compute_volume_solutions(
-            num_sample_points=None, point_cloud=volume_coordinates, plot_solutions=False
-        )
+        # domino.compute_volume_solutions(
+        #     num_sample_points=None, point_cloud=volume_coordinates,
+        #     point_cloud_sampled=90_000_000, plot_solutions=False
+        # )
 
         # domino.compute_forces()
 
@@ -1393,7 +1633,9 @@ if __name__ == "__main__":
         volume_variable_names = list(cfg.variables.volume.solution.keys())
 
         vtp_out_path = os.path.join(pred_save_path, f"boundary_{tag}_predicted.vtp")
-        npz_out_path = os.path.join(pred_save_path, f"volume_{tag}_predicted.npz")
+        npz_out_path = os.path.join(
+            pred_save_path, f"volume_{tag}_predicted_1M_nested_hierarchical_sampled.npz"
+        )
 
         # ===== WRITE SURFACE VTU (following test.py pattern) =====
         # Use the mesh_stl from domino (pyvista mesh), add predictions as cell data
@@ -1439,7 +1681,7 @@ if __name__ == "__main__":
         vol_dict["coordinates"] = volume_coords
         vol_dict["pressure"] = volume_pressure
         vol_dict["velocity"] = volume_velocity
-        np.savez(npz_out_path,**vol_dict)
+        np.savez(npz_out_path, **vol_dict)
 
         print(f"Write volume NPZ done for {tag}")
 

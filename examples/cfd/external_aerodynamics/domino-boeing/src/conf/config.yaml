@@ -76,6 +76,20 @@ data:
   bounding_box_surface: # Bounding box dimensions for shift wing surface
     min: [87.78, 0.0, 16.0]
     max: [2800.0, 1218.0, 765.45]
+  bounding_box_nested: # Nested bounding boxes for hierarchical sampling (tightest to loosest)
+    box1: # Tightest box
+      min: [1350.0, 120.0, 150.0]
+      max: [1550.0, 1159.0, 250.0]
+      percentage: 40.0  # Percentage of points to sample in this box
+    box2: # Second tightest (outside box1 but inside box2)
+      min: [1200.0, 120.0, 100.0]
+      max: [1700.0, 1159.0, 300.0]
+      percentage: 30.0  # Percentage of points to sample in this region
+    box3: # Third tightest (outside box2 but inside box3)
+      min: [1050.0, 120.0, 50.0]
+      max: [1850.0, 1159.0, 350.0]
+      percentage: 20.0  # Percentage of points to sample in this region
+    # Remaining percentage (100 - sum of above) is outside box3 but inside main bounding_box
   gpu_preprocessing: true
   gpu_output: true
 
@@ -200,9 +214,9 @@ val:
 # └───────────────────────────────────────────┘  
 # Testing configurable parameters
 eval:
-  test_path: /lustre/users/snidhan/nim-stl-test/ # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/users/snidhan/pred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.163.pt # Name of checkpoint to select from saved checkpoints
+  test_path: /lustre/users/snidhan/gtc-dc-demo-2025/testing/nim-stl-test/ # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/users/snidhan/gtc-dc-demo-2025/testing/pred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.409.pt # Name of checkpoint to select from saved checkpoints
   scaling_param_path: /lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino-boeing/src/outputs/Boeing_Run
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
