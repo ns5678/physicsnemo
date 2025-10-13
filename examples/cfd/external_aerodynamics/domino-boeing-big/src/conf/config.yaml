@@ -19,7 +19,7 @@
 # └───────────────────────────────────────────┘  
 # Project name
 project:
-  name: Boeing_Run
+  name: Boeing_Run_Original_Model_Architecture
 exp_tag: 1 # Experiment tag
 # Main output directory.
 project_dir: outputs/${project.name}/
@@ -40,11 +40,11 @@ resume_dir: ${output}/models
 # Data processor configurable parameters
 data_processor:
   kind: boeing_data # must be either drivesim or drivaer_aws
-  output_dir: /lustre/datasets/HiLiftAeroML-Processed-DC-Demo/
-  input_dir: /lustre/users/nashton/cadence/HiLiftAeroML
+  output_dir: /lustre/datasets/HiLiftAeroML-Processed-Big/
+  input_dir: /lustre/users/nashton/cadence/HiLiftAeroML/
   cached_dir: /user/cached/drivaer_aws/drivaer_data_full/
   use_cache: false
-  num_processors: 24
+  num_processors: 36
 
 # ┌───────────────────────────────────────────┐
 # │            Solution variables             │
@@ -68,8 +68,8 @@ variables:
 # └───────────────────────────────────────────┘  
 # Input directory for training and validation data
 data:
-  input_dir: /lustre/high-lift/train
-  input_dir_val: /lustre/high-lift/val
+  input_dir: /lustre/datasets/HiLiftAeroML-Processed-Big/train/
+  input_dir_val: /lustre/datasets/HiLiftAeroML-Processed-Big/val/
   bounding_box: # Bounding box dimensions for shift wing volume
     min: [0.0, 0.0, -250.0]
     max: [3500.0, 1500.0, 1500.0]

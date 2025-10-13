@@ -1588,24 +1588,24 @@ if __name__ == "__main__":
         domino.set_stencil_size(STENCIL_SIZE)
 
         #### Get the unstructured grid data for VTU output
-        # reader = vtk.vtkXMLUnstructuredGridReader()
-        # reader.SetFileName(vtu_filepath)
-        # reader.Update()
-        # polydata = reader.GetOutput()
-        # volume_coordinates, volume_fields = get_volume_data(
-        #     polydata, cfg.variables.volume.solution.keys()
-        # )
-        # volume_fields = np.concatenate(volume_fields, axis=-1)
-        # c_min = cfg.data.bounding_box.min
-        # c_max = cfg.data.bounding_box.max
-        # ids_in_bbox = np.where(
-        #     (volume_coordinates[:, 0] < c_min[0])
-        #     | (volume_coordinates[:, 0] > c_max[0])
-        #     | (volume_coordinates[:, 1] < c_min[1])
-        #     | (volume_coordinates[:, 1] > c_max[1])
-        #     | (volume_coordinates[:, 2] < c_min[2])
-        #     | (volume_coordinates[:, 2] > c_max[2])
-        # )
+        reader = vtk.vtkXMLUnstructuredGridReader()
+        reader.SetFileName(vtu_filepath)
+        reader.Update()
+        polydata = reader.GetOutput()
+        volume_coordinates, volume_fields = get_volume_data(
+            polydata, cfg.variables.volume.solution.keys()
+        )
+        volume_fields = np.concatenate(volume_fields, axis=-1)
+        c_min = cfg.data.bounding_box.min
+        c_max = cfg.data.bounding_box.max
+        ids_in_bbox = np.where(
+            (volume_coordinates[:, 0] < c_min[0])
+            | (volume_coordinates[:, 0] > c_max[0])
+            | (volume_coordinates[:, 1] < c_min[1])
+            | (volume_coordinates[:, 1] > c_max[1])
+            | (volume_coordinates[:, 2] < c_min[2])
+            | (volume_coordinates[:, 2] > c_max[2])
+        )
 
         domino.read_stl()
         domino.initialize_data_processor()
@@ -1615,9 +1615,9 @@ if __name__ == "__main__":
         ### Calculate volume solutions
 
         ## For NIM deployment with hierarchical nested sampling
-        domino.compute_volume_solutions(
-            num_sample_points=1_024_000, plot_solutions=False, sample_nested=True
-        )
+        # domino.compute_volume_solutions(
+        #     num_sample_points=1_024_000, plot_solutions=False, sample_nested=True
+        # )
 
         ## For validation with predefined test VTU file
         # domino.compute_volume_solutions(
@@ -1636,53 +1636,62 @@ if __name__ == "__main__":
         npz_out_path = os.path.join(
             pred_save_path, f"volume_{tag}_predicted_1M_nested_hierarchical_sampled.npz"
         )
-
-        # ===== WRITE SURFACE VTU (following test.py pattern) =====
-        # Use the mesh_stl from domino (pyvista mesh), add predictions as cell data
-        mesh_surf = domino.mesh_stl.copy()
-
-        # Add prediction arrays to mesh cell data (following test.py pattern)
-        mesh_surf[f"{surface_variable_names[0]}Pred"] = (
-            out_dict["pressure_surface"][0].cpu().numpy().astype(np.float32)
-        )
-        mesh_surf[f"{surface_variable_names[1]}Pred"] = (
-            out_dict["wall-shear-stress"][0].cpu().numpy().astype(np.float32)
+        npz_gt_path = os.path.join(
+            pred_save_path, f"volume_{tag}_gt.npz"
         )
 
-        # Convert back to point data before saving (following test.py pattern)
-        mesh_surf_with_point_data = mesh_surf.cell_data_to_point_data()
+        # # ===== WRITE SURFACE VTU (following test.py pattern) =====
+        # # Use the mesh_stl from domino (pyvista mesh), add predictions as cell data
+        # mesh_surf = domino.mesh_stl.copy()
 
-        # Save the mesh with predictions as VTU (using point data)
-        mesh_surf_with_point_data.save(vtp_out_path)
-        print(f"Write surface VTU done for {tag}")
+        # # Add prediction arrays to mesh cell data (following test.py pattern)
+        # mesh_surf[f"{surface_variable_names[0]}Pred"] = (
+        #     out_dict["pressure_surface"][0].cpu().numpy().astype(np.float32)
+        # )
+        # mesh_surf[f"{surface_variable_names[1]}Pred"] = (
+        #     out_dict["wall-shear-stress"][0].cpu().numpy().astype(np.float32)
+        # )
 
-        # ===== WRITE VOLUME VTU (following test.py pattern) =====
-        # Create a clean pyvista PointCloud with volume coordinates and predictions only (no ground truth)
-        volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
-        volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
-        volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
+        # # Convert back to point data before saving (following test.py pattern)
+        # mesh_surf_with_point_data = mesh_surf.cell_data_to_point_data()
 
-        # Zero out predictions outside bounding box (optional filter)
-        c_min = cfg.data.bounding_box.min
-        c_max = cfg.data.bounding_box.max
-        ids_in_bbox = np.where(
-            (volume_coords[:, 0] < c_min[0])
-            | (volume_coords[:, 0] > c_max[0])
-            | (volume_coords[:, 1] < c_min[1])
-            | (volume_coords[:, 1] > c_max[1])
-            | (volume_coords[:, 2] < c_min[2])
-            | (volume_coords[:, 2] > c_max[2])
-        )
-        volume_pressure[ids_in_bbox] = 0.0
-        volume_velocity[ids_in_bbox] = 0.0
+        # # Save the mesh with predictions as VTU (using point data)
+        # mesh_surf_with_point_data.save(vtp_out_path)
+        # print(f"Write surface VTU done for {tag}")
 
-        # Save the volume npz with predictions
-        vol_dict = {}
-        vol_dict["coordinates"] = volume_coords
-        vol_dict["pressure"] = volume_pressure
-        vol_dict["velocity"] = volume_velocity
-        np.savez(npz_out_path, **vol_dict)
+        # # ===== WRITE VOLUME VTU (following test.py pattern) =====
+        # # Create a clean pyvista PointCloud with volume coordinates and predictions only (no ground truth)
+        # volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
+        # volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
+        # volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
 
-        print(f"Write volume NPZ done for {tag}")
+        # # Zero out predictions outside bounding box (optional filter)
+        # c_min = cfg.data.bounding_box.min
+        # c_max = cfg.data.bounding_box.max
+        # ids_in_bbox = np.where(
+        #     (volume_coords[:, 0] < c_min[0])
+        #     | (volume_coords[:, 0] > c_max[0])
+        #     | (volume_coords[:, 1] < c_min[1])
+        #     | (volume_coords[:, 1] > c_max[1])
+        #     | (volume_coords[:, 2] < c_min[2])
+        #     | (volume_coords[:, 2] > c_max[2])
+        # )
+        # volume_pressure[ids_in_bbox] = 0.0
+        # volume_velocity[ids_in_bbox] = 0.0
+
+        # # Save the volume npz with predictions
+        # vol_dict = {}
+        # vol_dict["coordinates"] = volume_coords
+        # vol_dict["pressure"] = volume_pressure
+        # vol_dict["velocity"] = volume_velocity
+        # np.savez(npz_out_path, **vol_dict)
+
+        # print(f"Write volume NPZ done for {tag}")
+
+        vol_dict_gt = {}
+        vol_dict_gt["coordinates"] = volume_coordinates
+        vol_dict_gt["pressure"] = volume_fields[:, 0]
+        vol_dict_gt["velocity"] = volume_fields[:, 1:]
+        np.savez(npz_gt_path, **vol_dict_gt)
 
     exit()

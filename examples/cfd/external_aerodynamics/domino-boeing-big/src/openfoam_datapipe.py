@@ -15,8 +15,8 @@
 # limitations under the License.
 
 """
-This is the datapipe to read Cadence files from Boeing (vtp/vtu/stl) and save them as point clouds 
-in npy format. 
+This is the datapipe to read Cadence files from Boeing (vtp/vtu/stl) and save them as point clouds
+in npy format.
 """
 
 import time, random, json, re
@@ -37,6 +37,8 @@ UINFTY = np.float32(2679.505)
 
 """Class that defines the structure of the data files inside simulation folders
 """
+
+
 class BoeingPaths:
     @staticmethod
     def geometry_path(car_dir: Path) -> Path:
@@ -58,7 +60,7 @@ class BoeingPaths:
         if len(boundary_files) == 0:
             raise FileNotFoundError(f"No boundary_*.vtu file found in {car_dir}")
         return boundary_files[0]
-    
+
     @staticmethod
     def is_complete(car_dir: Path, model_type: str = "combined") -> bool:
         """Check if a folder has all required files based on model type."""
@@ -67,28 +69,31 @@ class BoeingPaths:
             stl_files = list(car_dir.glob("*.stl"))
             if len(stl_files) == 0:
                 return False
-            
+
             # Check for volume files if needed
             if model_type in ["volume", "combined"]:
                 volume_files = list(car_dir.glob("volume_*.vtu"))
                 if len(volume_files) == 0:
                     return False
-            
+
             # Check for surface files if needed
             if model_type in ["surface", "combined"]:
                 boundary_files = list(car_dir.glob("boundary_*.vtu"))
                 if len(boundary_files) == 0:
                     return False
-            
+
             return True
-        except Exception:
+        except Exception as e:
+            print(f"  Error checking {car_dir.name}: {e}")
             return False
 
-## TODO: Change the name of the class to better match the actual dataset/propagate changes 
+
+## TODO: Change the name of the class to better match the actual dataset/propagate changes
 class OpenFoamDataset(Dataset):
     """
     Datapipe for converting boeing dataset to npy
     """
+
     def __init__(
         self,
         data_path: Union[str, Path],
@@ -101,6 +106,7 @@ class OpenFoamDataset(Dataset):
         sample_in_bbox: bool = False,
         device: int = 0,
         model_type=None,
+        validated_filenames: Optional[list] = None,
     ):
         if isinstance(data_path, str):
             data_path = Path(data_path)
@@ -108,10 +114,10 @@ class OpenFoamDataset(Dataset):
         self.data_path = data_path
 
         supported_kinds = ["boeing_data"]
-        assert (
-            kind in supported_kinds
-        ), f"kind should be one of {supported_kinds}, got {kind}"
-        
+        assert kind in supported_kinds, (
+            f"kind should be one of {supported_kinds}, got {kind}"
+        )
+
         if kind == "boeing_data":
             self.path_getter = BoeingPaths
 
@@ -119,29 +125,42 @@ class OpenFoamDataset(Dataset):
         assert self.data_path.is_dir(), f"Path {self.data_path} is not a directory"
 
         self.model_type = model_type
-        self.filenames = get_filenames(self.data_path)
-        
-        # Filter out folders named "sample" and .py files
-        self.filenames = [
-            fname for fname in self.filenames 
-            if fname != "sample" and not fname.endswith(".py")
-        ]
-        
-        # Filter out incomplete folders that don't have all required files
-        print(f"Checking {len(self.filenames)} folders for required files...")
-        complete_filenames = []
-        skipped_count = 0
-        for fname in self.filenames:
-            car_dir = self.data_path / fname
-            if car_dir.is_dir() and self.path_getter.is_complete(car_dir, model_type):
-                complete_filenames.append(fname)
-            else:
-                print(f"Skipping incomplete folder: {fname}")
-                skipped_count += 1
-        
-        self.filenames = complete_filenames
-        print(f"Found {len(self.filenames)} complete folders, skipped {skipped_count} incomplete folders")        
-        
+
+        # Use pre-validated filenames if provided, otherwise do validation
+        if validated_filenames is not None:
+            self.filenames = validated_filenames
+            print(f"Using {len(self.filenames)} pre-validated folders")
+        else:
+            self.filenames = get_filenames(self.data_path)
+
+            # Filter out folders named "sample" and .py/.txt files
+            self.filenames = [
+                fname
+                for fname in self.filenames
+                if fname != "sample"
+                and not fname.endswith(".py")
+                and not fname.endswith(".txt")
+            ]
+
+            # Filter out incomplete folders that don't have all required files
+            print(f"Checking {len(self.filenames)} folders for required files...")
+            complete_filenames = []
+            skipped_count = 0
+            for fname in self.filenames:
+                car_dir = self.data_path / fname
+                if car_dir.is_dir() and self.path_getter.is_complete(
+                    car_dir, model_type
+                ):
+                    complete_filenames.append(fname)
+                else:
+                    print(f"Skipping incomplete folder: {fname}")
+                    skipped_count += 1
+
+            self.filenames = complete_filenames
+            print(
+                f"Found {len(self.filenames)} complete folders, skipped {skipped_count} incomplete folders"
+            )
+
         random.shuffle(self.filenames)
         self.indices = np.array(len(self.filenames))
 
@@ -162,7 +181,7 @@ class OpenFoamDataset(Dataset):
 
         ## Extract AoA from folder name
         # Parse AoA from folder name (format: "geo_LHC001_AoA_12")
-        aoa_match = re.search(r'AoA_(\d+(?:\.\d+)?)', cfd_filename)
+        aoa_match = re.search(r"AoA_(\d+(?:\.\d+)?)", cfd_filename)
         if aoa_match:
             sample_AoA = np.float32(aoa_match.group(1))
         else:
@@ -174,9 +193,9 @@ class OpenFoamDataset(Dataset):
         mesh_stl = reader.read()
 
         stl_vertices = mesh_stl.points.astype(np.float32)
-        stl_faces = np.array(mesh_stl.faces).reshape((-1, 4))[
-            :, 1:
-        ].astype(np.float32)  # Assuming triangular elements
+        stl_faces = (
+            np.array(mesh_stl.faces).reshape((-1, 4))[:, 1:].astype(np.float32)
+        )  # Assuming triangular elements
         mesh_indices_flattened = stl_faces.flatten().astype(np.float32)
         stl_sizes = mesh_stl.compute_cell_sizes(length=False, area=True, volume=False)
         stl_sizes = np.array(stl_sizes.cell_data["Area"]).astype(np.float32)
@@ -196,9 +215,9 @@ class OpenFoamDataset(Dataset):
             )
             volume_coordinates = np.float32(volume_coordinates)
             volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
-        
+
             # Non-dimensionalize by PREF and UINFTY
-            volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF 
+            volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF
             volume_fields[:, 1:] = volume_fields[:, 1:] / UINFTY
         else:
             volume_fields = None
@@ -215,10 +234,14 @@ class OpenFoamDataset(Dataset):
                 surface_fields.append(np.array(mesh.cell_data[name]).astype(np.float32))
             surface_fields = np.array(surface_fields)
             surface_fields = np.stack(surface_fields, axis=-1)
-         
+
             surface_normals_area = np.array(mesh.cell_data["N_BF"]).astype(np.float32)
-            surface_areas = np.linalg.norm(surface_normals_area, axis=1).astype(np.float32)
-            surface_normals = np.array(mesh.cell_data["N_BF"])/np.reshape(surface_areas, (-1, 1))
+            surface_areas = np.linalg.norm(surface_normals_area, axis=1).astype(
+                np.float32
+            )
+            surface_normals = np.array(mesh.cell_data["N_BF"]) / np.reshape(
+                surface_areas, (-1, 1)
+            )
             surface_coordinates = mesh.cell_centers().points.astype(np.float32)
 
             # Non-dimensionalize by PREF
@@ -257,7 +280,7 @@ class OpenFoamDataset(Dataset):
                     f"Global parameter {key} not supported for  this dataset"
                 )
         global_params_values = np.array(global_params_values_list, dtype=np.float32)
-        
+
         ## Log min/max for all returned variables
         print(
             f"stl_coordinates: shape={stl_vertices.shape}, "
