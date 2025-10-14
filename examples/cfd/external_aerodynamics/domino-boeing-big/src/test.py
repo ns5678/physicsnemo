@@ -591,7 +591,7 @@ def main(cfg: DictConfig):
 
         ## Read and prune the VTU files to only have arrays in volume_variables
         if model_type == "volume" or model_type == "combined":
-
+            
             reader = vtk.vtkXMLUnstructuredGridReader()
             reader.SetFileName(vtu_path)
             reader.Update()
@@ -599,14 +599,30 @@ def main(cfg: DictConfig):
 
             # Keep only the arrays specified in config and convert to float32
             point_data = polydata_vol.GetPointData()
+            cell_data = polydata_vol.GetCellData()
 
-            # Store the arrays we want to keep in a dictionary
+            # Store the arrays we want to keep in a dictionary (including CellID and NodeID)
             arrays_to_keep = {}
             for var_name in volume_variable_names:
                 if point_data.HasArray(var_name):
                     array = point_data.GetArray(var_name)
                     array_np = numpy_support.vtk_to_numpy(array).astype(np.float32)
                     arrays_to_keep[var_name] = array_np
+            
+            # Also preserve CellID and NodeID if they exist
+            for id_name in ["CellID", "NodeID"]:
+                if point_data.HasArray(id_name):
+                    array = point_data.GetArray(id_name)
+                    array_np = numpy_support.vtk_to_numpy(array)
+                    arrays_to_keep[id_name] = array_np
+
+            # Store cell data arrays to keep
+            cell_arrays_to_keep = {}
+            for id_name in ["CellID"]:
+                if cell_data.HasArray(id_name):
+                    array = cell_data.GetArray(id_name)
+                    array_np = numpy_support.vtk_to_numpy(array)
+                    cell_arrays_to_keep[id_name] = array_np
 
             # Remove all arrays for point data
             num_arrays = point_data.GetNumberOfArrays()
@@ -614,30 +630,29 @@ def main(cfg: DictConfig):
                 array_name = point_data.GetArray(i).GetName()
                 point_data.RemoveArray(array_name)
 
-            # Add back only the arrays we want to keep as float32
+            # Remove all arrays for cell data
+            num_cell_arrays = cell_data.GetNumberOfArrays()
+            for i in range(num_cell_arrays - 1, -1, -1):
+                array_name = cell_data.GetArray(i).GetName()
+                cell_data.RemoveArray(array_name)
+
+            # Add back only the arrays we want to keep (already in correct data types)
             for var_name, array_np in arrays_to_keep.items():
-                array_float32 = numpy_support.numpy_to_vtk(array_np)
-                array_float32.SetName(var_name)
-                point_data.AddArray(array_float32)
+                array_vtk = numpy_support.numpy_to_vtk(array_np)
+                array_vtk.SetName(var_name)
+                point_data.AddArray(array_vtk)
+
+            # Add back cell data arrays
+            for var_name, array_np in cell_arrays_to_keep.items():
+                array_vtk = numpy_support.numpy_to_vtk(array_np)
+                array_vtk.SetName(var_name)
+                cell_data.AddArray(array_vtk)
 
             # Convert points to float32
             points = polydata_vol.GetPoints()
             points_np = numpy_support.vtk_to_numpy(points.GetData()).astype(np.float32)
             points_float32 = numpy_support.numpy_to_vtk(points_np)
             points.SetData(points_float32)
-
-            # Create new polydata as point cloud (just points + point data, no cells/connectivity)
-            new_polydata = vtk.vtkPolyData()
-            new_polydata.SetPoints(polydata_vol.GetPoints())
-
-            # Copy all point data arrays to the new polydata
-            point_data_source = polydata_vol.GetPointData()
-            point_data_dest = new_polydata.GetPointData()
-            for i in range(point_data_source.GetNumberOfArrays()):
-                point_data_dest.AddArray(point_data_source.GetArray(i))
-
-            # Replace polydata_vol with point cloud version (no cells)
-            polydata_vol = new_polydata
 
             volume_coordinates, volume_fields = get_volume_data(
                 polydata_vol, volume_variable_names
@@ -835,18 +850,17 @@ def main(cfg: DictConfig):
             )
             l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
 
-        if prediction_surf is not None:
-            # Add prediction arrays to mesh cell data
-            mesh[f"{surface_variable_names[0]}Pred"] = (
-                prediction_surf[0, :, 0:1].astype(np.float32).flatten()
-            )
-            mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
-                np.float32
-            )
+        # if prediction_surf is not None:
+        #     # Add prediction arrays to mesh cell data
+        #     mesh[f"{surface_variable_names[0]}Pred"] = (
+        #         prediction_surf[0, :, 0:1].astype(np.float32).flatten()
+        #     )
+        #     mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
+        #         np.float32
+        #     )
 
-            mesh_with_point_data = mesh.cell_data_to_point_data()
-
-            mesh_with_point_data.save(vtp_pred_save_path)
+        #     mesh_with_point_data = mesh.cell_data_to_point_data()
+        #     mesh_with_point_data.save(vtp_pred_save_path)
 
         if prediction_vol is not None:
 
@@ -858,18 +872,8 @@ def main(cfg: DictConfig):
             volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
             polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            # Convert polydata (point cloud) to unstructured grid for VTU format
-            # VTU requires vtkUnstructuredGrid, not vtkPolyData
-            unstructured_grid = vtk.vtkUnstructuredGrid()
-            unstructured_grid.SetPoints(polydata_vol.GetPoints())
-
-            # Copy all point data arrays
-            point_data_source = polydata_vol.GetPointData()
-            point_data_dest = unstructured_grid.GetPointData()
-            for i in range(point_data_source.GetNumberOfArrays()):
-                point_data_dest.AddArray(point_data_source.GetArray(i))
-
-            write_to_vtu(unstructured_grid, vtu_pred_save_path)
+            # Write polydata_vol directly - it already has all data, connectivity, and predictions
+            write_to_vtu(polydata_vol, vtu_pred_save_path)
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4

@@ -200,9 +200,9 @@ val:
 # └───────────────────────────────────────────┘  
 # Testing configurable parameters
 eval:
-  test_path: /lustre/users/snidhan/gtc-dc-demo-2025/testing/test-new/ # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /lustre/users/snidhan/gtc-dc-demo-2025/testing/pred-new/ # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_name: DoMINO.0.213.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino-boeing-big/src/outputs/Boeing_Run_Improved_Model_Architecture/
+  test_path: /lustre/users/snidhan/nim-stl-test/ # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: /lustre/users/snidhan/pred-nim/ # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_name: DoMINO.0.163.pt # Name of checkpoint to select from saved checkpoints
+  scaling_param_path: /lustre/users/snidhan/gtc-dc-demo-2025/physicsnemo/examples/cfd/external_aerodynamics/domino-boeing/src/outputs/Boeing_Run
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 7 # Stencil size for evaluating surface and volume model
