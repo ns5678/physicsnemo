@@ -19,7 +19,7 @@
 # └───────────────────────────────────────────┘  
 # Project name
 project:
-  name: Boeing_Run_Improved_Model_Architecture_V2
+  name: Boeing_Run_Improved_Model_Architecture_Final
 exp_tag: 1 # Experiment tag
 # Main output directory.
 project_dir: outputs/${project.name}/
@@ -76,14 +76,6 @@ data:
   bounding_box_surface: # Bounding box dimensions for shift wing surface
     min: [87.78, 0.0, 16.0]
     max: [2800.0, 1218.0, 765.45]
-  scaling_factors:
-    surface:
-      mean: [1.0345767e+00,  1.3971147e-03]
-      std: [6.0662293e-01, -9.1542752e-04]
-    volume:
-      mean: [1.0336256,  2.6156008,  2.3592474,  3.8122456]
-      std: [0.6460464, -1.8755425, -2.542777 , -1.6899712]
-
   gpu_preprocessing: true
   gpu_output: true
 
@@ -123,7 +115,7 @@ model:
   surf_loss_scaling: 1.0 # scale surface loss with this factor in combined mode
   vol_loss_scaling: 1.0 # scale volume loss with this factor in combined mode
   geometry_encoding_type: both # geometry encoder type, sdf, stl, both
-  solution_calculation_mode: two-loop # one-loop is better for sharded, two-loop is lower memory but more overhead. Physics losses are not supported via one-loop presently.
+  solution_calculation_mode: two-loop
   resampling_surface_mesh: # resampling of surface mesh before constructing kd tree
     resample: false #false or true
     points: 1_000_000 # number of points
