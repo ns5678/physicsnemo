@@ -192,7 +192,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                         pos_encoding,
                         global_params_values,
                         global_params_reference,
-                        num_sample_points=cfg.model.num_neighbors_volume,
+                        num_sample_points=cfg.eval.stencil_size,
                         eval_mode="volume",
                     )
                     running_tloss_vol += loss_fn(tpredictions_batch, target_batch)
@@ -273,7 +273,7 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                         surface_neighbors_areas_batch,
                         global_params_values,
                         global_params_reference,
-                        num_sample_points=cfg.model.num_neighbors_surface,
+                        num_sample_points=cfg.eval.stencil_size,
                     )
                     running_tloss_surf += loss_fn(tpredictions_batch, target_batch)
                     prediction_surf[:, start_idx:end_idx] = (
@@ -873,7 +873,7 @@ def main(cfg: DictConfig):
             polydata_vol.GetPointData().AddArray(volParam_vtk)
 
             # Write polydata_vol directly - it already has all data, connectivity, and predictions
-            write_to_vtu(polydata_vol, vtu_pred_save_path)
+            # write_to_vtu(polydata_vol, vtu_pred_save_path)
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4

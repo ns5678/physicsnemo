@@ -835,41 +835,41 @@ def main(cfg: DictConfig):
             )
             l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
 
-        if prediction_surf is not None:
-            # Add prediction arrays to mesh cell data
-            mesh[f"{surface_variable_names[0]}Pred"] = (
-                prediction_surf[0, :, 0:1].astype(np.float32).flatten()
-            )
-            mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
-                np.float32
-            )
+        # if prediction_surf is not None:
+        #     # Add prediction arrays to mesh cell data
+        #     mesh[f"{surface_variable_names[0]}Pred"] = (
+        #         prediction_surf[0, :, 0:1].astype(np.float32).flatten()
+        #     )
+        #     mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
+        #         np.float32
+        #     )
 
-            mesh_with_point_data = mesh.cell_data_to_point_data()
+        #     mesh_with_point_data = mesh.cell_data_to_point_data()
 
-            mesh_with_point_data.save(vtp_pred_save_path)
+        #     mesh_with_point_data.save(vtp_pred_save_path)
 
-        if prediction_vol is not None:
+        # if prediction_vol is not None:
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            # Convert polydata (point cloud) to unstructured grid for VTU format
-            # VTU requires vtkUnstructuredGrid, not vtkPolyData
-            unstructured_grid = vtk.vtkUnstructuredGrid()
-            unstructured_grid.SetPoints(polydata_vol.GetPoints())
+        #     # Convert polydata (point cloud) to unstructured grid for VTU format
+        #     # VTU requires vtkUnstructuredGrid, not vtkPolyData
+        #     unstructured_grid = vtk.vtkUnstructuredGrid()
+        #     unstructured_grid.SetPoints(polydata_vol.GetPoints())
 
-            # Copy all point data arrays
-            point_data_source = polydata_vol.GetPointData()
-            point_data_dest = unstructured_grid.GetPointData()
-            for i in range(point_data_source.GetNumberOfArrays()):
-                point_data_dest.AddArray(point_data_source.GetArray(i))
+        #     # Copy all point data arrays
+        #     point_data_source = polydata_vol.GetPointData()
+        #     point_data_dest = unstructured_grid.GetPointData()
+        #     for i in range(point_data_source.GetNumberOfArrays()):
+        #         point_data_dest.AddArray(point_data_source.GetArray(i))
 
-            write_to_vtu(unstructured_grid, vtu_pred_save_path)
+        #     write_to_vtu(unstructured_grid, vtu_pred_save_path)
 
     l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
     l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4

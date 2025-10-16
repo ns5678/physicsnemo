@@ -25,7 +25,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from scipy.spatial import KDTree
-import pyvista as pv
 from torch import nn
 from hydra import compose, initialize
 import vtk
@@ -66,6 +65,7 @@ except:
 ## Ok for demo
 PREF = np.float32(176.352)
 UINFTY = np.float32(2679.505)
+
 
 @wp.kernel
 def _bvh_query_distance(
@@ -247,7 +247,6 @@ class inferenceDataPipe:
         del self.data_dict["sdf_nodes"]
 
     def create_grid_torch(self, mx, mn, nres):
-        start_time = time.time()
         dx = torch.linspace(mn[0], mx[0], nres[0], device=self.device)
         dy = torch.linspace(mn[1], mx[1], nres[1], device=self.device)
         dz = torch.linspace(mn[2], mx[2], nres[2], device=self.device)
@@ -265,8 +264,6 @@ class inferenceDataPipe:
         surface_indices = self.surface_indices
         surface_areas = self.surface_areas
         surface_centers = self.surface_centers
-
-        start_time = time.time()
 
         if bounding_box is None:
             # Create a bounding box
@@ -357,8 +354,6 @@ class inferenceDataPipe:
         else:
             c_min = max_min[0]
             c_max = max_min[1]
-
-        start_time = time.time()
 
         nx, ny, nz = self.grid_resolution
 
@@ -562,7 +557,6 @@ class dominoInference:
             self.world_size = self.dist.world_size
 
         # Initialize AoA (angle of attack) - this is the only variable parameter
-        self.aoa = None
         self.aoa_reference = torch.full((1, 1), 22.0, dtype=torch.float32).to(
             self.device
         )
@@ -635,37 +629,39 @@ class dominoInference:
             self.bounding_box_surface_min_max = [c_min, c_max]
 
     def load_volume_scaling_factors(self):
-        # vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
-        # vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
-        # vol_factors = np.stack([vol_mean, vol_std])
-        # vol_factors = torch.from_numpy(vol_factors).to(self.device)
-        scaling_param_path = self.cfg.eval.scaling_param_path
-        vol_factors_path = os.path.join(
-            scaling_param_path, "volume_scaling_factors.npy"
-        )
-
-        vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
+        vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
+        vol_factors = np.stack([vol_mean, vol_std])
         vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        # scaling_param_path = self.cfg.eval.scaling_param_path
+        # vol_factors_path = os.path.join(
+        #     scaling_param_path, "volume_scaling_factors.npy"
+        # )
+
+        # vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        # vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
         return vol_factors
 
     def load_surface_scaling_factors(self):
-        # surf_mean = np.array(
-        #     self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
-        # )
-        # surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
-        # surf_factors = np.stack([surf_mean, surf_std])
-        # surf_factors = torch.from_numpy(surf_factors).to(self.device)
-        scaling_param_path = self.cfg.eval.scaling_param_path
-        surf_factors_path = os.path.join(
-            scaling_param_path, "surface_scaling_factors.npy"
+        surf_mean = np.array(
+            self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
         )
-        surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
+        surf_factors = np.stack([surf_mean, surf_std])
         surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        # scaling_param_path = self.cfg.eval.scaling_param_path
+        # surf_factors_path = os.path.join(
+        #     scaling_param_path, "surface_scaling_factors.npy"
+        # )
+        # surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        # surf_factors = torch.from_numpy(surf_factors).to(self.device)
 
         return surf_factors
 
     def read_stl(self):
+        import pyvista as pv
+
         reader = pv.get_reader(self.stl_path)
         mesh_stl = reader.read()
         stl_vertices = mesh_stl.points
@@ -787,9 +783,6 @@ class dominoInference:
             (1, 1), stream_velocity, dtype=torch.float32
         ).to(self.device)
 
-    def set_aoa(self, aoa):
-        self.aoa = torch.full((1, 1), aoa, dtype=torch.float32).to(self.device)
-
     def set_stencil_size(self, stencil_size):
         self.stencil_size = stencil_size
 
@@ -827,21 +820,41 @@ class dominoInference:
             geo_encoding, geo_encoding_surface = self.calculate_geometry_encoding(
                 surface_vertices, grid, sdf_grid, s_grid, surf_sdf_grid, self.model
             )
+
+            # Save cached geometry for future use
+            if cached_geom_path is not None:
+                cache_dict = {
+                    "bounding_box_min_max": self.bounding_box_min_max,
+                    "grid": self.grid,
+                    "sdf_grid": self.sdf_grid,
+                    "s_grid": self.s_grid,
+                    "surf_sdf_grid": self.surf_sdf_grid,
+                    "com": self.center_of_mass,
+                    "geo_encoding": geo_encoding,
+                    "geo_encoding_surface": geo_encoding_surface,
+                }
+                torch.save(cache_dict, cached_geom_path)
+                print(f"Saved cached geometry to {cached_geom_path}")
         else:
             out_dict_cached = torch.load(cached_geom_path, map_location=self.device)
             self.bounding_box_min_max = out_dict_cached["bounding_box_min_max"]
-            self.grid = out_dict_cached["grid"]
-            self.sdf_grid = out_dict_cached["sdf_grid"]
             self.center_of_mass = out_dict_cached["com"]
+            self.grid = out_dict_cached["grid"]
+            self.s_grid = out_dict_cached["s_grid"]
+            self.sdf_grid = out_dict_cached["sdf_grid"]
+            self.surf_sdf_grid = out_dict_cached["surf_sdf_grid"]
+            self.out_dict["sdf"] = self.sdf_grid
+
             geo_encoding = out_dict_cached["geo_encoding"]
             geo_encoding_surface = out_dict_cached["geo_encoding_surface"]
-            self.out_dict["sdf"] = self.sdf_grid
-        print("Time taken for geo encoding = %f" % (time.time() - start_time))
+            print(f"Loaded cached geometry from {cached_geom_path}")
 
         self.geometry_encoding = geo_encoding
         self.geometry_encoding_surface = geo_encoding_surface
 
         self.out_dict["bounding_box_dims"] = torch.vstack(self.bounding_box_min_max)
+        print("Time taken for geo encoding = %f" % (time.time() - start_time))
+
 
     def compute_forces(self):
         pressure = self.out_dict["pressure_surface"]
@@ -858,16 +871,11 @@ class dominoInference:
                 self.surface_mesh["surface_mesh_normals"][self.sampling_indices]
             ).to(self.device)
 
-        drag_force = torch.sum(
-            pressure[0, :, 0] * surface_normals[:, 0] * surface_areas
-            - wall_shear[0, :, 0] * surface_areas
-        )
         lift_force = torch.sum(
             pressure[0, :, 0] * surface_normals[:, 2] * surface_areas
-            - wall_shear[0, :, 2] * surface_areas
+            - wall_shear[0, :, 0] * surface_areas
         )
 
-        self.out_dict["drag_force"] = drag_force
         self.out_dict["lift_force"] = lift_force
 
     @torch.inference_mode()
@@ -878,7 +886,8 @@ class dominoInference:
         plot_solutions=False,
         eval_batch_size=1_024_000,
     ):
-        total_time = 0.0
+
+        start_time = time.time()
 
         geo_encoding = self.geometry_encoding_surface
 
@@ -894,7 +903,6 @@ class dominoInference:
             self.surface_mesh = None
 
         with autocast(enabled=True):
-            start_time = time.time()
             (
                 surface_mesh_centers,
                 surface_neighbors,
@@ -914,13 +922,8 @@ class dominoInference:
                 center_of_mass=self.center_of_mass,
                 stencil_size=self.stencil_size,
             )
-            cur_time = time.time() - start_time
-            print(f"sample_points_in_surface time (s): {cur_time:.4f}")
 
             surface_coordinates_all = surface_mesh_centers
-
-            inner_time = time.time()
-            start_time = time.time()
 
             if num_sample_points is None:
                 point_batch_size = eval_batch_size
@@ -943,7 +946,7 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        aoa=self.aoa,
+                        aoa=self.stream_velocity,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
             else:
@@ -967,18 +970,12 @@ class dominoInference:
                         pos_normals_com[:, start_idx:end_idx],
                         self.s_grid,
                         self.model,
-                        aoa=self.aoa,
+                        aoa=self.stream_velocity,
                     )
                     surface_solutions[:, start_idx:end_idx] = surface_solutions_batch
 
-            cur_time = time.time() - start_time
-            print(f"Compute_solution time (s): {cur_time:.4f}")
-            total_time += float(time.time() - inner_time)
             surface_solutions_all = surface_solutions
-            print(
-                "Time taken for compute solution on surface for=%f, %f"
-                % (time.time() - inner_time, torch.cuda.utilization(self.device))
-            )
+            
         cmax = surf_scaling_factors[0]
         cmin = surf_scaling_factors[1]
 
@@ -1001,6 +998,8 @@ class dominoInference:
         self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:] * PREF
         self.sampling_indices = sampling_indices
 
+        print("Total time spent in compute_surface_solutions ", time.time() - start_time)
+
     @torch.inference_mode()
     def compute_volume_solutions(
         self,
@@ -1016,7 +1015,7 @@ class dominoInference:
                 "Please provide either number of sampling points or a point cloud"
             )
 
-        total_time = 0.0
+        start_time = time.time()
 
         geo_encoding = self.geometry_encoding
 
@@ -1043,7 +1042,6 @@ class dominoInference:
             # Compute volume
             with autocast(enabled=True):
                 inner_time = time.time()
-                start_time = time.time()
                 if num_sample_points is not None:
                     (
                         volume_mesh_centers,
@@ -1069,13 +1067,10 @@ class dominoInference:
                         max_min=self.bounding_box_min_max,
                         center_of_mass=self.center_of_mass,
                     )
-                cur_time = time.time() - start_time
-                print(f"sample_points_in_volume time (s): {cur_time:.4f}")
 
                 volume_coordinates[:, start_idx:end_idx] = volume_mesh_centers
 
                 # start_event.record()
-                start_time = time.time()
                 volume_solutions_batch = self.compute_solution_in_volume(
                     geo_encoding,
                     volume_mesh_centers,
@@ -1085,18 +1080,14 @@ class dominoInference:
                     self.grid,
                     self.model,
                     use_sdf_basis=self.cfg.model.use_sdf_in_basis_func,
-                    aoa=self.aoa,
+                    aoa=self.stream_velocity,
                 )
                 volume_solutions[:, start_idx:end_idx] = volume_solutions_batch
 
-                cur_time = time.time() - start_time
-                print(f"Compute_solution time (s): {cur_time:.4f}")
-                total_time += float(time.time() - inner_time)
                 print(
-                    "Time taken for compute solution in volume for =%f, %f"
+                    "Time taken for compute solution in volume for one batch =%f, %f"
                     % (time.time() - inner_time, torch.cuda.utilization(self.device))
                 )
-        print("Total time measured = %f" % total_time)
 
         cmax = scaling_factors[0]
         cmin = scaling_factors[1]
@@ -1123,6 +1114,8 @@ class dominoInference:
         self.out_dict["velocity"] = volume_solutions_all[:, :, 1:4] * UINFTY
         self.out_dict["turbulent-kinetic-energy"] = self.out_dict["pressure"]
         self.out_dict["turbulent-viscosity"] = self.out_dict["pressure"]
+        print("Total time spent in compute_volume_solutions ", time.time() - start_time)
+        
 
     def cold_start(self, cached_geom_path=None):
         print("Cold start")
@@ -1338,14 +1331,12 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Could not extract AoA from folder name: {dirname}")
 
-        STENCIL_SIZE = 20  # 20 is default value in test.py
+        STENCIL_SIZE = 1  # 20  # 20 is default value in test.py
         STREAM_VELOCITY = AOA  # Using AoA value as stream velocity proxy
 
         domino.set_stl_path(stl_filepath)
-        ## TODO: Remove one of these later
-        domino.set_stream_velocity(STREAM_VELOCITY)
-        domino.set_aoa(AOA)  # Set AoA explicitly for global parameters
 
+        domino.set_stream_velocity(STREAM_VELOCITY)
         domino.set_stencil_size(STENCIL_SIZE)
 
         #### Get the unstructured grid data for VTU output
@@ -1370,14 +1361,31 @@ if __name__ == "__main__":
 
         domino.read_stl()
         domino.initialize_data_processor()
-        domino.compute_geo_encoding()
+
+        # Define cache path based on the geometry (STL file)
+        # You can store this in a cache directory
+        cache_dir = os.path.join(pred_save_path, "cached_geometry")
+        os.makedirs(cache_dir, exist_ok=True)
+        cached_geom_path = os.path.join(cache_dir, f"geo_cache_{tag}.pt")
+
+        # Check if cache exists to enable caching
+        if os.path.exists(cached_geom_path):
+            # Load from cache
+            domino.cached_geo_encoding = True
+            domino.compute_geo_encoding(cached_geom_path)
+        else:
+            # Compute and save to cache
+            domino.cached_geo_encoding = False
+            domino.compute_geo_encoding(cached_geom_path)
+
+        ### Calculate surface solutions
         domino.compute_surface_solutions()
 
         ### Calculate volume solutions
 
         ## For NIM deployment
         # domino.compute_volume_solutions(
-        #     num_sample_points=10_240_000, plot_solutions=False
+        #     num_sample_points=5_000_000, plot_solutions=False
         # )
 
         ## For validation with predefined test VTU file
@@ -1396,7 +1404,6 @@ if __name__ == "__main__":
         npz_out_path = os.path.join(pred_save_path, f"volume_{tag}_predicted.npz")
 
         # ===== WRITE SURFACE VTU (following test.py pattern) =====
-        # Use the mesh_stl from domino (pyvista mesh), add predictions as cell data
         mesh_surf = domino.mesh_stl.copy()
 
         # Add prediction arrays to mesh cell data (following test.py pattern)
@@ -1414,8 +1421,7 @@ if __name__ == "__main__":
         mesh_surf_with_point_data.save(vtp_out_path)
         print(f"Write surface VTU done for {tag}")
 
-        # ===== WRITE VOLUME VTU (following test.py pattern) =====
-        # Create a clean pyvista PointCloud with volume coordinates and predictions only (no ground truth)
+        # ===== WRITE VOLUME NPZ =====
         volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
         volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
         volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
@@ -1439,8 +1445,8 @@ if __name__ == "__main__":
         vol_dict["coordinates"] = volume_coords
         vol_dict["pressure"] = volume_pressure
         vol_dict["velocity"] = volume_velocity
-        np.savez(npz_out_path,**vol_dict)
+        np.savez(npz_out_path, **vol_dict)
 
-        print(f"Write volume NPZ done for {tag}")
+        print(f"Written volume NPZ done for {tag}")
 
     exit()
