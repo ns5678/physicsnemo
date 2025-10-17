@@ -269,23 +269,45 @@ def loss_fn(
     Returns:
         Calculated loss as a scalar tensor
     """
-    mask = abs(target - padded_value) > 1e-3
+    output_scalar, output_vector = torch.split(output, [1, 3], dim=2)
+    target_scalar, target_vector = torch.split(target, [1, 3], dim=2)
 
-    if loss_type == "rmse":
-        dims = (0, 1)
+    numerator = torch.mean((output_scalar - target_scalar) ** 2.0)
+    vector_diff_sq = torch.mean((target_vector - output_vector) ** 2.0, (0, 1))
+    if loss_type == "mse":
+        masked_loss_pres = numerator
+        masked_loss_vel = torch.sum(vector_diff_sq)
     else:
-        dims = None
+        denom = torch.mean((target_scalar) ** 2.0)
+        masked_loss_pres = numerator / denom
 
-    num = torch.sum(mask * (output - target) ** 2.0, dims)
-    if loss_type == "rmse":
-        denom = torch.sum(mask * target**2.0, dims)
-        loss = torch.mean(torch.sqrt(num / denom))
-    elif loss_type == "mse":
-        denom = torch.sum(mask)
-        loss = torch.mean(num / denom)
-    else:
-        raise ValueError(f"Invalid loss type: {loss_type}")
-    return loss
+        # Compute the mean diff**2 of the vector component, leave the last dimension:
+        masked_loss_vel_num = vector_diff_sq
+        masked_loss_vel_denom = torch.mean((target_vector) ** 2.0, (0, 1))
+        masked_loss_vel = torch.sum(masked_loss_vel_num / masked_loss_vel_denom)
+
+    ## Weight velocity loss 3 times more than pressure loss
+    loss = masked_loss_pres + 3 * masked_loss_vel
+
+    return loss / 4.0
+
+    # mask = abs(target - padded_value) > 1e-3
+
+    # if loss_type == "rmse":
+    #     dims = (0, 1)
+    # else:
+    #     dims = None
+
+    # num = torch.sum(mask * (output - target) ** 2.0, dims)
+    # if loss_type == "rmse":
+    #     denom = torch.sum(mask * target**2.0, dims)
+    #     loss = torch.mean(torch.sqrt(num / denom))
+    # elif loss_type == "mse":
+    #     denom = torch.sum(mask)
+    #     loss = torch.mean(num / denom)
+    # else:
+    #     raise ValueError(f"Invalid loss type: {loss_type}")
+    # return loss
 
 
 def loss_fn_with_physics(

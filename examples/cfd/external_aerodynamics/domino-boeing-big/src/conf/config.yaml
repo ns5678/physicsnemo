@@ -19,7 +19,7 @@
 # └───────────────────────────────────────────┘  
 # Project name
 project:
-  name: Boeing_Run_Improved_Model_Architecture_Final
+  name: Boeing_Run_Improved_Model_Architecture_V2
 exp_tag: 1 # Experiment tag
 # Main output directory.
 project_dir: outputs/${project.name}/
@@ -71,8 +71,8 @@ data:
   input_dir: /lustre/datasets/HiLiftAeroML-Processed-Big/train/
   input_dir_val: /lustre/datasets/HiLiftAeroML-Processed-Big/val/
   bounding_box: # Bounding box dimensions for shift wing volume
-    min: [950.0, 80.0, 16.0]
-    max: [1900.0, 1160.0, 500.0]
+    min: [950.0, 80.0, 16.0]     # [998.453, 447.382, 71.3183]
+    max: [1900.0, 1160.0, 500.0] # [2032.57, 875.291, 427.909]
   bounding_box_surface: # Bounding box dimensions for shift wing surface
     min: [87.78, 0.0, 16.0]
     max: [2800.0, 1218.0, 765.45]

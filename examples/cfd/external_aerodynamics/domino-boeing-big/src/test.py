@@ -862,26 +862,17 @@ def main(cfg: DictConfig):
         #     mesh_with_point_data = mesh.cell_data_to_point_data()
         #     mesh_with_point_data.save(vtp_pred_save_path)
 
-        if prediction_vol is not None:
+        # if prediction_vol is not None:
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            # Write polydata_vol directly - it already has all data, connectivity, and predictions
-            # write_to_vtu(polydata_vol, vtu_pred_save_path)
-
-    l2_surface_all = np.asarray(l2_surface_all)  # num_files, 4
-    l2_volume_all = np.asarray(l2_volume_all)  # num_files, 4
-    l2_surface_mean = np.mean(l2_surface_all, 0)
-    l2_volume_mean = np.mean(l2_volume_all, 0)
-    print(
-        f"Mean over all samples, surface={l2_surface_mean} and volume={l2_volume_mean}"
-    )
+        #     write_to_vtu(polydata_vol, vtu_pred_save_path)
 
 
 if __name__ == "__main__":

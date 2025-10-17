@@ -629,33 +629,33 @@ class dominoInference:
             self.bounding_box_surface_min_max = [c_min, c_max]
 
     def load_volume_scaling_factors(self):
-        vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
-        vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
-        vol_factors = np.stack([vol_mean, vol_std])
-        vol_factors = torch.from_numpy(vol_factors).to(self.device)
-        # scaling_param_path = self.cfg.eval.scaling_param_path
-        # vol_factors_path = os.path.join(
-        #     scaling_param_path, "volume_scaling_factors.npy"
-        # )
-
-        # vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        # vol_mean = np.array(self.cfg.data.scaling_factors.volume.mean, dtype=np.float32)
+        # vol_std = np.array(self.cfg.data.scaling_factors.volume.std, dtype=np.float32)
+        # vol_factors = np.stack([vol_mean, vol_std])
         # vol_factors = torch.from_numpy(vol_factors).to(self.device)
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        vol_factors_path = os.path.join(
+            scaling_param_path, "volume_scaling_factors.npy"
+        )
+
+        vol_factors = np.load(vol_factors_path, allow_pickle=True)
+        vol_factors = torch.from_numpy(vol_factors).to(self.device)
 
         return vol_factors
 
     def load_surface_scaling_factors(self):
-        surf_mean = np.array(
-            self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
-        )
-        surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
-        surf_factors = np.stack([surf_mean, surf_std])
-        surf_factors = torch.from_numpy(surf_factors).to(self.device)
-        # scaling_param_path = self.cfg.eval.scaling_param_path
-        # surf_factors_path = os.path.join(
-        #     scaling_param_path, "surface_scaling_factors.npy"
+        # surf_mean = np.array(
+        #     self.cfg.data.scaling_factors.surface.mean, dtype=np.float32
         # )
-        # surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        # surf_std = np.array(self.cfg.data.scaling_factors.surface.std, dtype=np.float32)
+        # surf_factors = np.stack([surf_mean, surf_std])
         # surf_factors = torch.from_numpy(surf_factors).to(self.device)
+        scaling_param_path = self.cfg.eval.scaling_param_path
+        surf_factors_path = os.path.join(
+            scaling_param_path, "surface_scaling_factors.npy"
+        )
+        surf_factors = np.load(surf_factors_path, allow_pickle=True)
+        surf_factors = torch.from_numpy(surf_factors).to(self.device)
 
         return surf_factors
 
