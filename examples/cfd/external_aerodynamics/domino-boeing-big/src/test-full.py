@@ -104,18 +104,19 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
         surf_max = data_dict["surface_min_max"][:, 1]
         surf_min = data_dict["surface_min_max"][:, 0]
 
-        if output_features_vol is not None:
-            # Represent geometry on computational grid
-            # Computational domain grid
-            p_grid = data_dict["grid"]
-            sdf_grid = data_dict["sdf_grid"]
-            # Scaling factors
-            vol_max = data_dict["volume_min_max"][:, 1]
-            vol_min = data_dict["volume_min_max"][:, 0]
+        # COMMENTED OUT: Volume inference disabled
+        # if output_features_vol is not None:
+        #     # Represent geometry on computational grid
+        #     # Computational domain grid
+        #     p_grid = data_dict["grid"]
+        #     sdf_grid = data_dict["sdf_grid"]
+        #     # Scaling factors
+        #     vol_max = data_dict["volume_min_max"][:, 1]
+        #     vol_min = data_dict["volume_min_max"][:, 0]
 
-            # Normalize based on computational domain
-            geo_centers_vol = 2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
-            encoding_g_vol = model.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
+        #     # Normalize based on computational domain
+        #     geo_centers_vol = 2.0 * (geo_centers - vol_min) / (vol_max - vol_min) - 1
+        #     encoding_g_vol = model.geo_rep_volume(geo_centers_vol, p_grid, sdf_grid)
 
         if output_features_surf is not None:
             # Represent geometry on bounding box
@@ -126,87 +127,91 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                 geo_centers_surf, s_grid, sdf_surf_grid
             )
 
-        if (
-            output_features_vol is not None
-            and output_features_surf is not None
-            and cfg.model.combine_volume_surface
-        ):
-            encoding_g = torch.cat((encoding_g_vol, encoding_g_surf), axis=1)
-            encoding_g_surf = model.combined_unet_surf(encoding_g)
-            encoding_g_vol = model.combined_unet_vol(encoding_g)
+        # COMMENTED OUT: Combined volume/surface and volume prediction disabled
+        # if (
+        #     output_features_vol is not None
+        #     and output_features_surf is not None
+        #     and cfg.model.combine_volume_surface
+        # ):
+        #     encoding_g = torch.cat((encoding_g_vol, encoding_g_surf), axis=1)
+        #     encoding_g_surf = model.combined_unet_surf(encoding_g)
+        #     encoding_g_vol = model.combined_unet_vol(encoding_g)
 
-        if output_features_vol is not None:
-            # First calculate volume predictions if required
-            volume_mesh_centers = data_dict["volume_mesh_centers"]
-            target_vol = data_dict["volume_fields"]
-            # SDF on volume mesh nodes
-            sdf_nodes = data_dict["sdf_nodes"]
-            # Positional encoding based on closest point on surface to a volume node
-            pos_volume_closest = data_dict["pos_volume_closest"]
-            # Positional encoding based on center of mass of geometry to volume node
-            pos_volume_center_of_mass = data_dict["pos_volume_center_of_mass"]
-            p_grid = data_dict["grid"]
+        # if output_features_vol is not None:
+        #     # First calculate volume predictions if required
+        #     volume_mesh_centers = data_dict["volume_mesh_centers"]
+        #     target_vol = data_dict["volume_fields"]
+        #     # SDF on volume mesh nodes
+        #     sdf_nodes = data_dict["sdf_nodes"]
+        #     # Positional encoding based on closest point on surface to a volume node
+        #     pos_volume_closest = data_dict["pos_volume_closest"]
+        #     # Positional encoding based on center of mass of geometry to volume node
+        #     pos_volume_center_of_mass = data_dict["pos_volume_center_of_mass"]
+        #     p_grid = data_dict["grid"]
 
-            prediction_vol = np.zeros_like(target_vol.cpu().numpy())
-            num_points = volume_mesh_centers.shape[1]
-            subdomain_points = int(np.floor(num_points / point_batch_size))
+        #     prediction_vol = np.zeros_like(target_vol.cpu().numpy())
+        #     num_points = volume_mesh_centers.shape[1]
+        #     subdomain_points = int(np.floor(num_points / point_batch_size))
 
-            start_time = time.time()
+        #     start_time = time.time()
 
-            for p in range(subdomain_points + 1):
-                start_idx = p * point_batch_size
-                end_idx = (p + 1) * point_batch_size
-                with torch.no_grad():
-                    target_batch = target_vol[:, start_idx:end_idx]
-                    volume_mesh_centers_batch = volume_mesh_centers[
-                        :, start_idx:end_idx
-                    ]
-                    sdf_nodes_batch = sdf_nodes[:, start_idx:end_idx]
-                    pos_volume_closest_batch = pos_volume_closest[:, start_idx:end_idx]
-                    pos_normals_com_batch = pos_volume_center_of_mass[
-                        :, start_idx:end_idx
-                    ]
-                    geo_encoding_local = model.geo_encoding_local(
-                        0.5 * encoding_g_vol,
-                        volume_mesh_centers_batch,
-                        p_grid,
-                        mode="volume",
-                    )
-                    if cfg.model.use_sdf_in_basis_func:
-                        pos_encoding = torch.cat(
-                            (
-                                sdf_nodes_batch,
-                                pos_volume_closest_batch,
-                                pos_normals_com_batch,
-                            ),
-                            axis=-1,
-                        )
-                    else:
-                        pos_encoding = pos_normals_com_batch
-                    pos_encoding = model.position_encoder(
-                        pos_encoding, eval_mode="volume"
-                    )
-                    tpredictions_batch = model.calculate_solution(
-                        volume_mesh_centers_batch,
-                        geo_encoding_local,
-                        pos_encoding,
-                        global_params_values,
-                        global_params_reference,
-                        num_sample_points=cfg.eval.stencil_size,
-                        eval_mode="volume",
-                    )
-                    running_tloss_vol += loss_fn(tpredictions_batch, target_batch)
-                    prediction_vol[:, start_idx:end_idx] = (
-                        tpredictions_batch.cpu().numpy()
-                    )
+        #     for p in range(subdomain_points + 1):
+        #         start_idx = p * point_batch_size
+        #         end_idx = (p + 1) * point_batch_size
+        #         with torch.no_grad():
+        #             target_batch = target_vol[:, start_idx:end_idx]
+        #             volume_mesh_centers_batch = volume_mesh_centers[
+        #                 :, start_idx:end_idx
+        #             ]
+        #             sdf_nodes_batch = sdf_nodes[:, start_idx:end_idx]
+        #             pos_volume_closest_batch = pos_volume_closest[:, start_idx:end_idx]
+        #             pos_normals_com_batch = pos_volume_center_of_mass[
+        #                 :, start_idx:end_idx
+        #             ]
+        #             geo_encoding_local = model.geo_encoding_local(
+        #                 0.5 * encoding_g_vol,
+        #                 volume_mesh_centers_batch,
+        #                 p_grid,
+        #                 mode="volume",
+        #             )
+        #             if cfg.model.use_sdf_in_basis_func:
+        #                 pos_encoding = torch.cat(
+        #                     (
+        #                         sdf_nodes_batch,
+        #                         pos_volume_closest_batch,
+        #                         pos_normals_com_batch,
+        #                     ),
+        #                     axis=-1,
+        #                 )
+        #             else:
+        #                 pos_encoding = pos_normals_com_batch
+        #             pos_encoding = model.position_encoder(
+        #                 pos_encoding, eval_mode="volume"
+        #             )
+        #             tpredictions_batch = model.calculate_solution(
+        #                 volume_mesh_centers_batch,
+        #                 geo_encoding_local,
+        #                 pos_encoding,
+        #                 global_params_values,
+        #                 global_params_reference,
+        #                 num_sample_points=cfg.eval.stencil_size,
+        #                 eval_mode="volume",
+        #             )
+        #             running_tloss_vol += loss_fn(tpredictions_batch, target_batch)
+        #             prediction_vol[:, start_idx:end_idx] = (
+        #                 tpredictions_batch.cpu().numpy()
+        #             )
 
-            prediction_vol = unnormalize(prediction_vol, vol_factors[0], vol_factors[1])
+        #     prediction_vol = unnormalize(prediction_vol, vol_factors[0], vol_factors[1])
 
-            prediction_vol[:, :, :1] = prediction_vol[:, :, 0:1] * PREF
-            prediction_vol[:, :, 1:] = prediction_vol[:, :, 1:] * UINFTY
+        #     prediction_vol[:, :, :1] = prediction_vol[:, :, 0:1] * PREF
+        #     prediction_vol[:, :, 1:] = prediction_vol[:, :, 1:] * UINFTY
 
-        else:
-            prediction_vol = None
+        # else:
+        #     prediction_vol = None
+        
+        # Volume inference disabled - always return None
+        prediction_vol = None
 
         if output_features_surf is not None:
             # Next calculate surface predictions
@@ -384,7 +389,13 @@ def main(cfg: DictConfig):
         )
         model = model.module
 
-    dirnames = get_filenames(input_path)
+    # Read folder names from test-set.txt
+    test_set_file = os.path.join(os.path.dirname(__file__), "test-set.txt")
+    with open(test_set_file, 'r') as f:
+        dirnames = [line.strip() for line in f if line.strip()]
+    
+    # Original code commented out:
+    # dirnames = get_filenames(input_path)
     dev_id = torch.cuda.current_device()
     num_files = int(len(dirnames) / dist.world_size)
     dirnames_per_gpu = dirnames[int(num_files * dev_id) : int(num_files * (dev_id + 1))]
@@ -397,9 +408,28 @@ def main(cfg: DictConfig):
     l2_surface_all = []
     l2_volume_all = []
     aero_forces_all = []
+    
+    # Initialize CSV file and read already processed cases
+    csv_filename = os.path.join(os.path.dirname(__file__), f"lift_predictions_rank_{dist.rank}.csv")
+    processed_cases = set()
+    if os.path.exists(csv_filename):
+        with open(csv_filename, 'r') as f:
+            next(f)  # Skip header
+            for line in f:
+                if line.strip():  # Skip empty lines
+                    case_name = line.split(',')[0]
+                    processed_cases.add(case_name)
+        print(f"Found {len(processed_cases)} already processed cases in {csv_filename}")
+    else:
+        with open(csv_filename, 'w') as f:
+            f.write('case,lift_predicted,lift_ground_truth,relative_error\n')
+    
     for count, dirname in enumerate(dirnames_per_gpu):
+        if dirname in processed_cases:
+            print(f"Skipping {dirname} - already processed")
+            continue
         filepath = os.path.join(input_path, dirname)
-        tag = re.findall(r"(LHC\d+_AoA_\d+)", dirname)[0]
+        tag = re.findall(r"((?:LHC|F)\d+_AoA_\d+)", dirname)[0]
         stl_path = os.path.join(filepath, f"{dirname}.stl")
         vtp_path = os.path.join(filepath, f"boundary_{dirname}.vtu")
         vtu_path = os.path.join(filepath, f"volume_{dirname}.vtu")
@@ -589,219 +619,227 @@ def main(cfg: DictConfig):
             surface_neighbors_sizes = None
             pos_surface_center_of_mass = None
 
-        ## Read and prune the VTU files to only have arrays in volume_variables
-        if model_type == "volume" or model_type == "combined":
-            reader = vtk.vtkXMLUnstructuredGridReader()
-            reader.SetFileName(vtu_path)
-            reader.Update()
-            polydata_vol = reader.GetOutput()
+        ## COMMENTED OUT: Read and prune the VTU files to only have arrays in volume_variables
+        # if model_type == "volume" or model_type == "combined":
+        #     reader = vtk.vtkXMLUnstructuredGridReader()
+        #     reader.SetFileName(vtu_path)
+        #     reader.Update()
+        #     polydata_vol = reader.GetOutput()
 
-            # Keep only the arrays specified in config and convert to float32
-            point_data = polydata_vol.GetPointData()
-            cell_data = polydata_vol.GetCellData()
+        #     # Keep only the arrays specified in config and convert to float32
+        #     point_data = polydata_vol.GetPointData()
+        #     cell_data = polydata_vol.GetCellData()
 
-            # Store the arrays we want to keep in a dictionary (including CellID and NodeID)
-            arrays_to_keep = {}
-            for var_name in volume_variable_names:
-                if point_data.HasArray(var_name):
-                    array = point_data.GetArray(var_name)
-                    array_np = numpy_support.vtk_to_numpy(array).astype(np.float32)
-                    arrays_to_keep[var_name] = array_np
+        #     # Store the arrays we want to keep in a dictionary (including CellID and NodeID)
+        #     arrays_to_keep = {}
+        #     for var_name in volume_variable_names:
+        #         if point_data.HasArray(var_name):
+        #             array = point_data.GetArray(var_name)
+        #             array_np = numpy_support.vtk_to_numpy(array).astype(np.float32)
+        #             arrays_to_keep[var_name] = array_np
 
-            # Also preserve CellID and NodeID if they exist
-            for id_name in ["CellID", "NodeID"]:
-                if point_data.HasArray(id_name):
-                    array = point_data.GetArray(id_name)
-                    array_np = numpy_support.vtk_to_numpy(array)
-                    arrays_to_keep[id_name] = array_np
+        #     # Also preserve CellID and NodeID if they exist
+        #     for id_name in ["CellID", "NodeID"]:
+        #         if point_data.HasArray(id_name):
+        #             array = point_data.GetArray(id_name)
+        #             array_np = numpy_support.vtk_to_numpy(array)
+        #             arrays_to_keep[id_name] = array_np
 
-            # Store cell data arrays to keep
-            cell_arrays_to_keep = {}
-            for id_name in ["CellID"]:
-                if cell_data.HasArray(id_name):
-                    array = cell_data.GetArray(id_name)
-                    array_np = numpy_support.vtk_to_numpy(array)
-                    cell_arrays_to_keep[id_name] = array_np
+        #     # Store cell data arrays to keep
+        #     cell_arrays_to_keep = {}
+        #     for id_name in ["CellID"]:
+        #         if cell_data.HasArray(id_name):
+        #             array = cell_data.GetArray(id_name)
+        #             array_np = numpy_support.vtk_to_numpy(array)
+        #             cell_arrays_to_keep[id_name] = array_np
 
-            # Remove all arrays for point data
-            num_arrays = point_data.GetNumberOfArrays()
-            for i in range(num_arrays - 1, -1, -1):
-                array_name = point_data.GetArray(i).GetName()
-                point_data.RemoveArray(array_name)
+        #     # Remove all arrays for point data
+        #     num_arrays = point_data.GetNumberOfArrays()
+        #     for i in range(num_arrays - 1, -1, -1):
+        #         array_name = point_data.GetArray(i).GetName()
+        #         point_data.RemoveArray(array_name)
 
-            # Remove all arrays for cell data
-            num_cell_arrays = cell_data.GetNumberOfArrays()
-            for i in range(num_cell_arrays - 1, -1, -1):
-                array_name = cell_data.GetArray(i).GetName()
-                cell_data.RemoveArray(array_name)
+        #     # Remove all arrays for cell data
+        #     num_cell_arrays = cell_data.GetNumberOfArrays()
+        #     for i in range(num_cell_arrays - 1, -1, -1):
+        #         array_name = cell_data.GetArray(i).GetName()
+        #         cell_data.RemoveArray(array_name)
 
-            # Add back only the arrays we want to keep (already in correct data types)
-            for var_name, array_np in arrays_to_keep.items():
-                array_vtk = numpy_support.numpy_to_vtk(array_np)
-                array_vtk.SetName(var_name)
-                point_data.AddArray(array_vtk)
+        #     # Add back only the arrays we want to keep (already in correct data types)
+        #     for var_name, array_np in arrays_to_keep.items():
+        #         array_vtk = numpy_support.numpy_to_vtk(array_np)
+        #         array_vtk.SetName(var_name)
+        #         point_data.AddArray(array_vtk)
 
-            # Add back cell data arrays
-            for var_name, array_np in cell_arrays_to_keep.items():
-                array_vtk = numpy_support.numpy_to_vtk(array_np)
-                array_vtk.SetName(var_name)
-                cell_data.AddArray(array_vtk)
+        #     # Add back cell data arrays
+        #     for var_name, array_np in cell_arrays_to_keep.items():
+        #         array_vtk = numpy_support.numpy_to_vtk(array_np)
+        #         array_vtk.SetName(var_name)
+        #         cell_data.AddArray(array_vtk)
 
-            # Convert points to float32
-            points = polydata_vol.GetPoints()
-            points_np = numpy_support.vtk_to_numpy(points.GetData()).astype(np.float32)
-            points_float32 = numpy_support.numpy_to_vtk(points_np)
-            points.SetData(points_float32)
+        #     # Convert points to float32
+        #     points = polydata_vol.GetPoints()
+        #     points_np = numpy_support.vtk_to_numpy(points.GetData()).astype(np.float32)
+        #     points_float32 = numpy_support.numpy_to_vtk(points_np)
+        #     points.SetData(points_float32)
 
-            volume_coordinates, volume_fields = get_volume_data(
-                polydata_vol, volume_variable_names
-            )
-            volume_coordinates = np.float32(volume_coordinates)
-            volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
+        #     volume_coordinates, volume_fields = get_volume_data(
+        #         polydata_vol, volume_variable_names
+        #     )
+        #     volume_coordinates = np.float32(volume_coordinates)
+        #     volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
 
-            bounding_box_dims = []
-            bounding_box_dims.append(np.asarray(cfg.data.bounding_box.max))
-            bounding_box_dims.append(np.asarray(cfg.data.bounding_box.min))
+        #     bounding_box_dims = []
+        #     bounding_box_dims.append(np.asarray(cfg.data.bounding_box.max))
+        #     bounding_box_dims.append(np.asarray(cfg.data.bounding_box.min))
 
-            v_max = np.amax(volume_coordinates, 0)
-            v_min = np.amin(volume_coordinates, 0)
-            if bounding_box_dims is None:
-                c_max = s_max + (s_max - s_min) / 2
-                c_min = s_min - (s_max - s_min) / 2
-                c_min[2] = s_min[2]
-            else:
-                c_max = np.float32(bounding_box_dims[0])
-                c_min = np.float32(bounding_box_dims[1])
+        #     v_max = np.amax(volume_coordinates, 0)
+        #     v_min = np.amin(volume_coordinates, 0)
+        #     if bounding_box_dims is None:
+        #         c_max = s_max + (s_max - s_min) / 2
+        #         c_min = s_min - (s_max - s_min) / 2
+        #         c_min[2] = s_min[2]
+        #     else:
+        #         c_max = np.float32(bounding_box_dims[0])
+        #         c_min = np.float32(bounding_box_dims[1])
 
-            dx, dy, dz = (
-                (c_max[0] - c_min[0]) / nx,
-                (c_max[1] - c_min[1]) / ny,
-                (c_max[2] - c_min[2]) / nz,
-            )
-            # Generate a grid of specified resolution to map the bounding box
-            # The grid is used for capturing structured geometry features and SDF representation of geometry
-            grid = create_grid(c_max, c_min, [nx, ny, nz])
-            grid_reshaped = grid.reshape(nx * ny * nz, 3)
+        #     dx, dy, dz = (
+        #         (c_max[0] - c_min[0]) / nx,
+        #         (c_max[1] - c_min[1]) / ny,
+        #         (c_max[2] - c_min[2]) / nz,
+        #     )
+        #     # Generate a grid of specified resolution to map the bounding box
+        #     # The grid is used for capturing structured geometry features and SDF representation of geometry
+        #     grid = create_grid(c_max, c_min, [nx, ny, nz])
+        #     grid_reshaped = grid.reshape(nx * ny * nz, 3)
 
-            # SDF calculation on the grid using WARP
-            sdf_grid = signed_distance_field(
-                cp.asarray(stl_vertices).astype(cp.float32),
-                cp.asarray(mesh_indices_flattened).astype(cp.int32),
-                cp.asarray(grid_reshaped).astype(cp.float32),
-                use_sign_winding_number=True,
-                return_cupy=False,
-            ).reshape(nx, ny, nz)
+        #     # SDF calculation on the grid using WARP
+        #     sdf_grid = signed_distance_field(
+        #         cp.asarray(stl_vertices).astype(cp.float32),
+        #         cp.asarray(mesh_indices_flattened).astype(cp.int32),
+        #         cp.asarray(grid_reshaped).astype(cp.float32),
+        #         use_sign_winding_number=True,
+        #         return_cupy=False,
+        #     ).reshape(nx, ny, nz)
 
-            # SDF calculation
-            sdf_nodes, sdf_node_closest_point = signed_distance_field(
-                cp.asarray(stl_vertices).astype(cp.float32),
-                cp.asarray(mesh_indices_flattened).astype(cp.int32),
-                cp.asarray(volume_coordinates).astype(cp.float32),
-                include_hit_points=True,
-                use_sign_winding_number=True,
-                return_cupy=False,
-            )
-            sdf_nodes = sdf_nodes.reshape(-1, 1)
+        #     # SDF calculation
+        #     sdf_nodes, sdf_node_closest_point = signed_distance_field(
+        #         cp.asarray(stl_vertices).astype(cp.float32),
+        #         cp.asarray(mesh_indices_flattened).astype(cp.int32),
+        #         cp.asarray(volume_coordinates).astype(cp.float32),
+        #         include_hit_points=True,
+        #         use_sign_winding_number=True,
+        #         return_cupy=False,
+        #     )
+        #     sdf_nodes = sdf_nodes.reshape(-1, 1)
 
-            if cfg.model.positional_encoding:
-                pos_volume_closest = calculate_normal_positional_encoding(
-                    volume_coordinates, sdf_node_closest_point, cell_length=[dx, dy, dz]
-                )
-                pos_volume_center_of_mass = calculate_normal_positional_encoding(
-                    volume_coordinates, center_of_mass, cell_length=[dx, dy, dz]
-                )
-            else:
-                pos_volume_closest = volume_coordinates - sdf_node_closest_point
-                pos_volume_center_of_mass = volume_coordinates - center_of_mass
+        #     if cfg.model.positional_encoding:
+        #         pos_volume_closest = calculate_normal_positional_encoding(
+        #             volume_coordinates, sdf_node_closest_point, cell_length=[dx, dy, dz]
+        #         )
+        #         pos_volume_center_of_mass = calculate_normal_positional_encoding(
+        #             volume_coordinates, center_of_mass, cell_length=[dx, dy, dz]
+        #         )
+        #     else:
+        #         pos_volume_closest = volume_coordinates - sdf_node_closest_point
+        #         pos_volume_center_of_mass = volume_coordinates - center_of_mass
 
-            volume_coordinates = normalize(volume_coordinates, c_max, c_min)
-            grid = normalize(grid, c_max, c_min)
-            vol_grid_max_min = np.asarray([c_min, c_max])
+        #     volume_coordinates = normalize(volume_coordinates, c_max, c_min)
+        #     grid = normalize(grid, c_max, c_min)
+        #     vol_grid_max_min = np.asarray([c_min, c_max])
 
-        else:
-            volume_coordinates = None
-            volume_fields = None
-            pos_volume_closest = None
-            pos_volume_center_of_mass = None
+        # else:
+        #     volume_coordinates = None
+        #     volume_fields = None
+        #     pos_volume_closest = None
+        #     pos_volume_center_of_mass = None
+        
+        # Volume data reading disabled
+        volume_coordinates = None
+        volume_fields = None
+        pos_volume_closest = None
+        pos_volume_center_of_mass = None
 
         geom_centers = np.float32(stl_vertices)
 
-        if model_type == "combined":
-            # Add the parameters to the dictionary
-            data_dict = {
-                "pos_volume_closest": pos_volume_closest,
-                "pos_volume_center_of_mass": pos_volume_center_of_mass,
-                "pos_surface_center_of_mass": pos_surface_center_of_mass,
-                "geometry_coordinates": geom_centers,
-                "grid": grid,
-                "surf_grid": surf_grid,
-                "sdf_grid": sdf_grid,
-                "sdf_surf_grid": sdf_surf_grid,
-                "sdf_nodes": sdf_nodes,
-                "surface_mesh_centers": surface_coordinates,
-                "surface_mesh_neighbors": surface_neighbors,
-                "surface_normals": surface_normals,
-                "surface_neighbors_normals": surface_neighbors_normals,
-                "surface_areas": surface_sizes,
-                "surface_neighbors_areas": surface_neighbors_sizes,
-                "volume_fields": volume_fields,
-                "volume_mesh_centers": volume_coordinates,
-                "surface_fields": surface_fields,
-                "volume_min_max": vol_grid_max_min,
-                "surface_min_max": surf_grid_max_min,
-                "length_scale": np.array(length_scale, dtype=np.float32),
-                "global_params_values": np.expand_dims(
-                    np.array(global_params_values, dtype=np.float32), -1
-                ),
-                "global_params_reference": np.expand_dims(
-                    np.array(global_params_reference, dtype=np.float32), -1
-                ),
-            }
-        elif model_type == "surface":
-            data_dict = {
-                "pos_surface_center_of_mass": np.float32(pos_surface_center_of_mass),
-                "geometry_coordinates": np.float32(geom_centers),
-                "surf_grid": np.float32(surf_grid),
-                "sdf_surf_grid": np.float32(sdf_surf_grid),
-                "surface_mesh_centers": np.float32(surface_coordinates),
-                "surface_mesh_neighbors": np.float32(surface_neighbors),
-                "surface_normals": np.float32(surface_normals),
-                "surface_neighbors_normals": np.float32(surface_neighbors_normals),
-                "surface_areas": np.float32(surface_sizes),
-                "surface_neighbors_areas": np.float32(surface_neighbors_sizes),
-                "surface_fields": np.float32(surface_fields),
-                "surface_min_max": np.float32(surf_grid_max_min),
-                "length_scale": np.array(length_scale, dtype=np.float32),
-                "global_params_values": np.expand_dims(
-                    np.array(global_params_values, dtype=np.float32), -1
-                ),
-                "global_params_reference": np.expand_dims(
-                    np.array(global_params_reference, dtype=np.float32), -1
-                ),
-            }
-        elif model_type == "volume":
-            data_dict = {
-                "pos_volume_closest": pos_volume_closest,
-                "pos_volume_center_of_mass": pos_volume_center_of_mass,
-                "geometry_coordinates": geom_centers,
-                "grid": grid,
-                "surf_grid": surf_grid,
-                "sdf_grid": sdf_grid,
-                "sdf_surf_grid": sdf_surf_grid,
-                "sdf_nodes": sdf_nodes,
-                "volume_fields": volume_fields,
-                "volume_mesh_centers": volume_coordinates,
-                "volume_min_max": vol_grid_max_min,
-                "surface_min_max": surf_grid_max_min,
-                "length_scale": np.array(length_scale, dtype=np.float32),
-                "global_params_values": np.expand_dims(
-                    np.array(global_params_values, dtype=np.float32), -1
-                ),
-                "global_params_reference": np.expand_dims(
-                    np.array(global_params_reference, dtype=np.float32), -1
-                ),
-            }
-
+        # COMMENTED OUT: Combined model type disabled (volume inference disabled)
+        # if model_type == "combined":
+        #     # Add the parameters to the dictionary
+        #     data_dict = {
+        #         "pos_volume_closest": pos_volume_closest,
+        #         "pos_volume_center_of_mass": pos_volume_center_of_mass,
+        #         "pos_surface_center_of_mass": pos_surface_center_of_mass,
+        #         "geometry_coordinates": geom_centers,
+        #         "grid": grid,
+        #         "surf_grid": surf_grid,
+        #         "sdf_grid": sdf_grid,
+        #         "sdf_surf_grid": sdf_surf_grid,
+        #         "sdf_nodes": sdf_nodes,
+        #         "surface_mesh_centers": surface_coordinates,
+        #         "surface_mesh_neighbors": surface_neighbors,
+        #         "surface_normals": surface_normals,
+        #         "surface_neighbors_normals": surface_neighbors_normals,
+        #         "surface_areas": surface_sizes,
+        #         "surface_neighbors_areas": surface_neighbors_sizes,
+        #         "volume_fields": volume_fields,
+        #         "volume_mesh_centers": volume_coordinates,
+        #         "surface_fields": surface_fields,
+        #         "volume_min_max": vol_grid_max_min,
+        #         "surface_min_max": surf_grid_max_min,
+        #         "length_scale": np.array(length_scale, dtype=np.float32),
+        #         "global_params_values": np.expand_dims(
+        #             np.array(global_params_values, dtype=np.float32), -1
+        #         ),
+        #         "global_params_reference": np.expand_dims(
+        #             np.array(global_params_reference, dtype=np.float32), -1
+        #         ),
+        #     }
+        # if model_type == "surface":
+        data_dict = {
+            "pos_surface_center_of_mass": np.float32(pos_surface_center_of_mass),
+            "geometry_coordinates": np.float32(geom_centers),
+            "surf_grid": np.float32(surf_grid),
+            "sdf_surf_grid": np.float32(sdf_surf_grid),
+            "surface_mesh_centers": np.float32(surface_coordinates),
+            "surface_mesh_neighbors": np.float32(surface_neighbors),
+            "surface_normals": np.float32(surface_normals),
+            "surface_neighbors_normals": np.float32(surface_neighbors_normals),
+            "surface_areas": np.float32(surface_sizes),
+            "surface_neighbors_areas": np.float32(surface_neighbors_sizes),
+            "surface_fields": np.float32(surface_fields),
+            "surface_min_max": np.float32(surf_grid_max_min),
+            "length_scale": np.array(length_scale, dtype=np.float32),
+            "global_params_values": np.expand_dims(
+                np.array(global_params_values, dtype=np.float32), -1
+            ),
+            "global_params_reference": np.expand_dims(
+                np.array(global_params_reference, dtype=np.float32), -1
+            ),
+        }
+        # COMMENTED OUT: Volume model type disabled (volume inference disabled)
+        # elif model_type == "volume":
+        #     data_dict = {
+        #         "pos_volume_closest": pos_volume_closest,
+        #         "pos_volume_center_of_mass": pos_volume_center_of_mass,
+        #         "geometry_coordinates": geom_centers,
+        #         "grid": grid,
+        #         "surf_grid": surf_grid,
+        #         "sdf_grid": sdf_grid,
+        #         "sdf_surf_grid": sdf_surf_grid,
+        #         "sdf_nodes": sdf_nodes,
+        #         "volume_fields": volume_fields,
+        #         "volume_mesh_centers": volume_coordinates,
+        #         "volume_min_max": vol_grid_max_min,
+        #         "surface_min_max": surf_grid_max_min,
+        #         "length_scale": np.array(length_scale, dtype=np.float32),
+        #         "global_params_values": np.expand_dims(
+        #             np.array(global_params_values, dtype=np.float32), -1
+        #         ),
+        #         "global_params_reference": np.expand_dims(
+        #             np.array(global_params_reference, dtype=np.float32), -1
+        #         ),
+        #     }
+        
         data_dict = {
             key: torch.from_numpy(np.expand_dims(np.float32(value), 0))
             for key, value in data_dict.items()
@@ -822,8 +860,12 @@ def main(cfg: DictConfig):
                 surface_fields[:, 0] * surface_normals[:, 2] * surface_sizes[:, 0]
                 - surface_fields[:, 1] * surface_sizes[:, 0]
             )
-            print("Lift=", dirname, force_z_pred, force_z_true, 
-                   np.abs(force_z_pred - force_z_true)/force_z_true)
+            relative_error = np.abs(force_z_pred - force_z_true)/force_z_true
+            print("Lift=", dirname, force_z_pred, force_z_true, relative_error)
+            
+            # Immediately append to CSV file
+            with open(csv_filename, 'a') as f:
+                f.write(f'{dirname},{float(force_z_pred)},{float(force_z_true)},{float(relative_error)}\n')
 
             l2_gt = np.mean(np.square(surface_fields), (0))
             l2_error = np.mean(np.square(prediction_surf[0] - surface_fields), (0))
@@ -835,52 +877,57 @@ def main(cfg: DictConfig):
                 np.sqrt(l2_error) / np.sqrt(l2_gt),
             )
 
-        if prediction_vol is not None:
-            target_vol = volume_fields
-            prediction_vol = prediction_vol[0]
-            c_min = vol_grid_max_min[0]
-            c_max = vol_grid_max_min[1]
-            volume_coordinates = unnormalize(volume_coordinates, c_max, c_min)
-            ids_in_bbox = np.where(
-                (volume_coordinates[:, 0] < c_min[0])
-                | (volume_coordinates[:, 0] > c_max[0])
-                | (volume_coordinates[:, 1] < c_min[1])
-                | (volume_coordinates[:, 1] > c_max[1])
-                | (volume_coordinates[:, 2] < c_min[2])
-                | (volume_coordinates[:, 2] > c_max[2])
-            )
-            target_vol[ids_in_bbox] = 0.0
-            prediction_vol[ids_in_bbox] = 0.0
-            l2_gt = np.mean(np.square(target_vol), (0))
-            l2_error = np.mean(np.square(prediction_vol - target_vol), (0))
-            print(
-                "Volume L-2 norm:",
-                dirname,
-                np.sqrt(l2_error) / np.sqrt(l2_gt),
-            )
-            l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
+        # COMMENTED OUT: Volume output printing and writing
+        # if prediction_vol is not None:
+        #     target_vol = volume_fields
+        #     prediction_vol = prediction_vol[0]
+        #     c_min = vol_grid_max_min[0]
+        #     c_max = vol_grid_max_min[1]
+        #     volume_coordinates = unnormalize(volume_coordinates, c_max, c_min)
+        #     ids_in_bbox = np.where(
+        #         (volume_coordinates[:, 0] < c_min[0])
+        #         | (volume_coordinates[:, 0] > c_max[0])
+        #         | (volume_coordinates[:, 1] < c_min[1])
+        #         | (volume_coordinates[:, 1] > c_max[1])
+        #         | (volume_coordinates[:, 2] < c_min[2])
+        #         | (volume_coordinates[:, 2] > c_max[2])
+        #     )
+        #     target_vol[ids_in_bbox] = 0.0
+        #     prediction_vol[ids_in_bbox] = 0.0
+        #     l2_gt = np.mean(np.square(target_vol), (0))
+        #     l2_error = np.mean(np.square(prediction_vol - target_vol), (0))
+        #     print(
+        #         "Volume L-2 norm:",
+        #         dirname,
+        #         np.sqrt(l2_error) / np.sqrt(l2_gt),
+        #     )
+        #     l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
 
-        if prediction_surf is not None:
-            mesh[f"{surface_variable_names[0]}Pred"] = (
-                prediction_surf[0, :, 0:1].astype(np.float32).flatten()
-            )
-            mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
-                np.float32
-            )
+        # COMMENTED OUT: VTP/VTU output writing
+        # if prediction_surf is not None:
+        #     mesh[f"{surface_variable_names[0]}Pred"] = (
+        #         prediction_surf[0, :, 0:1].astype(np.float32).flatten()
+        #     )
+        #     mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
+        #         np.float32
+        #     )
 
-            mesh_with_point_data = mesh.cell_data_to_point_data()
-            mesh_with_point_data.save(vtp_pred_save_path)
+        #     mesh_with_point_data = mesh.cell_data_to_point_data()
+        #     mesh_with_point_data.save(vtp_pred_save_path)
 
-        if prediction_vol is not None:
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        # if prediction_vol is not None:
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+        #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+        #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+        #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            write_to_vtu(polydata_vol, vtu_pred_save_path)
+        #     write_to_vtu(polydata_vol, vtu_pred_save_path)
+
+    print(f"\nLift predictions saved continuously to: {csv_filename}")
+    print(f"Total cases processed: {count + 1}")
 
 
 if __name__ == "__main__":

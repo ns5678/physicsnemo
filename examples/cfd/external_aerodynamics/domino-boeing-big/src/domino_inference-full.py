@@ -61,6 +61,12 @@ except:
     CUPY_AVAILABLE = False
     cp = None
 
+## Reference parameters to be accessed globally -- Not a good practice
+## Ok for demo
+PREF = np.float32(176.352)
+UINFTY = np.float32(2679.505)
+
+
 @wp.kernel
 def _bvh_query_distance(
     mesh: wp.uint64,
@@ -571,12 +577,6 @@ class dominoInference:
         self.cached_geo_encoding = cached_geo_encoding
         self.out_dict = {}
 
-        # Reference values for pref, uinfty, qref, aref
-        self.pref = np.float32(176.352)
-        self.uinfty = np.float32(2679.505)
-        self.aref = np.float32(297360.0)
-        self.qref = np.float32(4.93)
-
     def get_geometry_encoding(self):
         return self.geometry_encoding
 
@@ -878,7 +878,7 @@ class dominoInference:
         )
 
         self.out_dict["lift_force"] = lift_force
-        self.out_dict["lift_coeff"] = lift_force/torch.from_numpy(self.aref * self.qref)
+        self.out_dict["lift_coeff"] = lift_force/(297360.0 * 4.93)
 
     @torch.inference_mode()
     def compute_surface_solutions(
@@ -996,8 +996,8 @@ class dominoInference:
         self.out_dict["surface_coordinates"] = (
             0.5 * (surface_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
-        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, :1] * self.pref
-        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:] * self.pref
+        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, :1] * PREF
+        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:] * PREF
         self.sampling_indices = sampling_indices
 
         print("Total time spent in compute_surface_solutions ", time.time() - start_time)
@@ -1112,8 +1112,8 @@ class dominoInference:
             0.5 * (volume_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
 
-        self.out_dict["pressure"] = volume_solutions_all[:, :, 0:1] * self.pref
-        self.out_dict["velocity"] = volume_solutions_all[:, :, 1:4] * self.uinfty
+        self.out_dict["pressure"] = volume_solutions_all[:, :, 0:1] * PREF
+        self.out_dict["velocity"] = volume_solutions_all[:, :, 1:4] * UINFTY
         self.out_dict["turbulent-kinetic-energy"] = self.out_dict["pressure"]
         self.out_dict["turbulent-viscosity"] = self.out_dict["pressure"]
         print("Total time spent in compute_volume_solutions ", time.time() - start_time)
@@ -1301,7 +1301,23 @@ if __name__ == "__main__":
         torch.distributed.barrier()
 
     input_path = cfg.eval.test_path
-    dirnames = get_filenames(input_path)
+    
+    # Read cases from CSV file
+    csv_input_path = os.path.join(os.path.dirname(__file__), f"lift_predictions_rank_{dist.rank}.csv")
+    dirnames = []
+    if os.path.exists(csv_input_path):
+        import csv
+        with open(csv_input_path, 'r') as f:
+            csv_reader = csv.DictReader(f)
+            for row in csv_reader:
+                if row['case'].strip():  # Skip empty rows
+                    dirnames.append(row['case'])
+        print(f"Loaded {len(dirnames)} cases from {csv_input_path}")
+    else:
+        # Fallback to original method if CSV doesn't exist
+        dirnames = get_filenames(input_path)
+        print(f"CSV not found, using all files from {input_path}")
+    
     dev_id = torch.cuda.current_device()
     num_files = int(len(dirnames) / 1)
     dirnames_per_gpu = dirnames[int(num_files * dev_id) : int(num_files * (dev_id + 1))]
@@ -1314,13 +1330,20 @@ if __name__ == "__main__":
     # Load model checkpoint from config (following test.py pattern)
     model_path = os.path.join(cfg.resume_dir, cfg.eval.checkpoint_name)
     domino.initialize_model(model_path=model_path)
+    
+    # Initialize CSV file for lift forces output
+    csv_output_path = os.path.join(os.path.dirname(__file__), f"lift_coeffs_computed_rank_{dist.rank}.csv")
+    csv_file = open(csv_output_path, 'w')
+    csv_file.write('case,lift_coeff\n')
+    csv_file.close()
+    print(f"Initialized output CSV: {csv_output_path}")
 
     for count, dirname in enumerate(dirnames_per_gpu):
         print(f"Processing sample {dirname}")
         filepath = os.path.join(input_path, dirname)
 
-        # Extract tag for output naming (e.g., "LHC001_AoA_22")
-        tag = re.findall(r"(LHC\d{3}_AoA_\d+)", dirname)[0]
+        # Extract tag for output naming (e.g., "LHC001_AoA_22" or "F25_AoA_8")
+        tag = re.findall(r"((?:LHC|F)\d+_AoA_\d+)", dirname)[0]
 
         # Input STL file path following test.py pattern
         stl_filepath = os.path.join(filepath, f"{dirname}.stl")
@@ -1391,64 +1414,75 @@ if __name__ == "__main__":
         # )
 
         ## For validation with predefined test VTU file
-        domino.compute_volume_solutions(
-            num_sample_points=None, point_cloud=volume_coordinates, plot_solutions=False
-        )
+        # domino.compute_volume_solutions(
+        #     num_sample_points=None, point_cloud=volume_coordinates, plot_solutions=False
+        # )
 
         domino.compute_forces()
 
         out_dict = domino.get_out_dict()
+        
+        # Extract lift force and write to CSV
+        # lift_force = out_dict["lift_force"].cpu().item()
+        lift_force = out_dict["lift_coeff"].cpu().item()
+        with open(csv_output_path, 'a') as csv_file:
+            csv_file.write(f'{dirname},{lift_force}\n')
+        print(f"Lift force for {dirname}: {lift_force}")
 
-        surface_variable_names = list(cfg.variables.surface.solution.keys())
-        volume_variable_names = list(cfg.variables.volume.solution.keys())
+        # surface_variable_names = list(cfg.variables.surface.solution.keys())
+        # volume_variable_names = list(cfg.variables.volume.solution.keys())
 
-        vtp_out_path = os.path.join(pred_save_path, f"boundary_{tag}_predicted_NIM.vtp")
-        npz_out_path = os.path.join(pred_save_path, f"volume_{tag}_predicted_NIM.npz")
+        # vtp_out_path = os.path.join(pred_save_path, f"boundary_{tag}_predicted_NIM.vtp")
+        # npz_out_path = os.path.join(pred_save_path, f"volume_{tag}_predicted_NIM.npz")
 
-        # ===== WRITE SURFACE VTU (following test.py pattern) =====
-        mesh_surf = domino.mesh_stl.copy()
+        # # ===== WRITE SURFACE VTU (following test.py pattern) =====
+        # mesh_surf = domino.mesh_stl.copy()
 
-        # Add prediction arrays to mesh cell data (following test.py pattern)
-        mesh_surf[f"{surface_variable_names[0]}Pred"] = (
-            out_dict["pressure_surface"][0].cpu().numpy().astype(np.float32)
-        )
-        mesh_surf[f"{surface_variable_names[1]}Pred"] = (
-            out_dict["wall-shear-stress"][0].cpu().numpy().astype(np.float32)
-        )
+        # # Add prediction arrays to mesh cell data (following test.py pattern)
+        # mesh_surf[f"{surface_variable_names[0]}Pred"] = (
+        #     out_dict["pressure_surface"][0].cpu().numpy().astype(np.float32)
+        # )
+        # mesh_surf[f"{surface_variable_names[1]}Pred"] = (
+        #     out_dict["wall-shear-stress"][0].cpu().numpy().astype(np.float32)
+        # )
 
-        # Convert back to point data before saving (following test.py pattern)
-        mesh_surf_with_point_data = mesh_surf.cell_data_to_point_data()
+        # # Convert back to point data before saving (following test.py pattern)
+        # mesh_surf_with_point_data = mesh_surf.cell_data_to_point_data()
 
-        # Save the mesh with predictions as VTU (using point data)
-        mesh_surf_with_point_data.save(vtp_out_path)
-        print(f"Write surface VTU done for {tag}")
+        # # Save the mesh with predictions as VTU (using point data)
+        # mesh_surf_with_point_data.save(vtp_out_path)
+        # print(f"Write surface VTU done for {tag}")
 
-        # # ===== WRITE VOLUME NPZ =====
-        volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
-        volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
-        volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
+        # # # ===== WRITE VOLUME NPZ =====
+        # volume_coords = out_dict["coordinates"][0].cpu().numpy().astype(np.float32)
+        # volume_pressure = out_dict["pressure"][0].cpu().numpy().astype(np.float32)
+        # volume_velocity = out_dict["velocity"][0].cpu().numpy().astype(np.float32)
 
-        # Zero out predictions outside bounding box (optional filter)
-        c_min = cfg.data.bounding_box.min
-        c_max = cfg.data.bounding_box.max
-        ids_in_bbox = np.where(
-            (volume_coords[:, 0] < c_min[0])
-            | (volume_coords[:, 0] > c_max[0])
-            | (volume_coords[:, 1] < c_min[1])
-            | (volume_coords[:, 1] > c_max[1])
-            | (volume_coords[:, 2] < c_min[2])
-            | (volume_coords[:, 2] > c_max[2])
-        )
-        volume_pressure[ids_in_bbox] = 0.0
-        volume_velocity[ids_in_bbox] = 0.0
+        # # Zero out predictions outside bounding box (optional filter)
+        # c_min = cfg.data.bounding_box.min
+        # c_max = cfg.data.bounding_box.max
+        # ids_in_bbox = np.where(
+        #     (volume_coords[:, 0] < c_min[0])
+        #     | (volume_coords[:, 0] > c_max[0])
+        #     | (volume_coords[:, 1] < c_min[1])
+        #     | (volume_coords[:, 1] > c_max[1])
+        #     | (volume_coords[:, 2] < c_min[2])
+        #     | (volume_coords[:, 2] > c_max[2])
+        # )
+        # volume_pressure[ids_in_bbox] = 0.0
+        # volume_velocity[ids_in_bbox] = 0.0
 
-        # Save the volume npz with predictions
-        vol_dict = {}
-        vol_dict["coordinates"] = volume_coords
-        vol_dict["pressure"] = volume_pressure
-        vol_dict["velocity"] = volume_velocity
-        np.savez(npz_out_path, **vol_dict)
+        # # Save the volume npz with predictions
+        # vol_dict = {}
+        # vol_dict["coordinates"] = volume_coords
+        # vol_dict["pressure"] = volume_pressure
+        # vol_dict["velocity"] = volume_velocity
+        # np.savez(npz_out_path, **vol_dict)
 
-        print(f"Written volume NPZ done for {tag}")
+        # print(f"Written volume NPZ done for {tag}")
+    
+    print(f"\n{'='*80}")
+    print(f"All cases processed. Lift forces written to: {csv_output_path}")
+    print(f"{'='*80}\n")
 
     exit()
