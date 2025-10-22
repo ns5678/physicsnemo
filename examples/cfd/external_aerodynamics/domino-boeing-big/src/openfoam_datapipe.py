@@ -30,9 +30,10 @@ import vtk
 from physicsnemo.utils.domino.utils import *
 from torch.utils.data import Dataset
 
-## Constants across simulation files for reference pressure, rho, velocity
+## Constants across simulation files for reference pressure, rho, velocity, tau
 PREF = np.float32(176.352)
 RHOREF = np.float32(1.375e-6)
+TAUREF = np.float32(0.50)
 UINFTY = np.float32(2679.505)
 
 """Class that defines the structure of the data files inside simulation folders
