@@ -58,6 +58,7 @@ from physicsnemo.utils.sdf import signed_distance_field
 
 ## Constants across simulation files for reference pressure, rho, velocity
 PREF = np.float32(176.352)
+TAUREF = np.float32(0.40)
 RHOREF = np.float32(1.375e-6)
 UINFTY = np.float32(2679.505)
 
@@ -284,7 +285,9 @@ def test_step(data_dict, model, device, cfg, vol_factors, surf_factors):
                 prediction_surf, surf_factors[0], surf_factors[1]
             )
 
-            prediction_surf *= PREF
+            prediction_surf[:, :, 0:1] *= PREF
+            prediction_surf[:, :, 1:] *= TAUREF
+
 
         else:
             prediction_surf = None
@@ -860,27 +863,27 @@ def main(cfg: DictConfig):
             )
             l2_volume_all.append(np.sqrt(l2_error) / np.sqrt(l2_gt))
 
-        if prediction_surf is not None:
-            mesh[f"{surface_variable_names[0]}Pred"] = (
-                prediction_surf[0, :, 0:1].astype(np.float32).flatten()
-            )
-            mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
-                np.float32
-            )
+            # if prediction_surf is not None:
+            #     mesh[f"{surface_variable_names[0]}Pred"] = (
+            #         prediction_surf[0, :, 0:1].astype(np.float32).flatten()
+            #     )
+            #     mesh[f"{surface_variable_names[1]}Pred"] = prediction_surf[0, :, 1:].astype(
+            #         np.float32
+            #     )
 
-            mesh_with_point_data = mesh.cell_data_to_point_data()
-            mesh_with_point_data.save(vtp_pred_save_path)
+            #     mesh_with_point_data = mesh.cell_data_to_point_data()
+            #     mesh_with_point_data.save(vtp_pred_save_path)
 
-        if prediction_vol is not None:
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+            # if prediction_vol is not None:
+            #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 0:1].astype(np.float32))
+            #     volParam_vtk.SetName(f"{volume_variable_names[0]}Pred")
+            #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
-            volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
-            polydata_vol.GetPointData().AddArray(volParam_vtk)
+            #     volParam_vtk = numpy_support.numpy_to_vtk(prediction_vol[:, 1:].astype(np.float32))
+            #     volParam_vtk.SetName(f"{volume_variable_names[1]}Pred")
+            #     polydata_vol.GetPointData().AddArray(volParam_vtk)
 
-            write_to_vtu(polydata_vol, vtu_pred_save_path)
+            #     write_to_vtu(polydata_vol, vtu_pred_save_path)
 
 
 if __name__ == "__main__":

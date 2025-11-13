@@ -31,15 +31,13 @@ from physicsnemo.utils.domino.utils import *
 from torch.utils.data import Dataset
 
 ## Constants across simulation files for reference pressure, rho, velocity, tau
-PREF = np.float32(176.352)
-RHOREF = np.float32(1.375e-6)
-TAUREF = np.float32(0.50)
-UINFTY = np.float32(2679.505)
+PREF = np.float32(176.352) ## Taken from sim parameters
+RHOREF = np.float32(1.375e-6) ## Taken from sim parameters
+TAUREF = np.float32(0.40)  ## Chosen based on visual inspection of couple of samples
+UINFTY = np.float32(2679.505) ## Taken from sim parameters
 
 """Class that defines the structure of the data files inside simulation folders
 """
-
-
 class BoeingPaths:
     @staticmethod
     def geometry_path(car_dir: Path) -> Path:
@@ -133,7 +131,6 @@ class OpenFoamDataset(Dataset):
             print(f"Using {len(self.filenames)} pre-validated folders")
         else:
             self.filenames = get_filenames(self.data_path)
-
             # Filter out folders named "sample" and .py/.txt files
             self.filenames = [
                 fname
@@ -218,8 +215,8 @@ class OpenFoamDataset(Dataset):
             volume_fields = np.concatenate(volume_fields, axis=-1).astype(np.float32)
 
             # Non-dimensionalize by PREF and UINFTY
-            volume_fields[:, 0:1] = volume_fields[:, 0:1] / PREF
-            volume_fields[:, 1:] = volume_fields[:, 1:] / UINFTY
+            volume_fields[:, 0:1] /= PREF
+            volume_fields[:, 1:] /= UINFTY
         else:
             volume_fields = None
             volume_coordinates = None
@@ -245,8 +242,10 @@ class OpenFoamDataset(Dataset):
             )
             surface_coordinates = mesh.cell_centers().points.astype(np.float32)
 
-            # Non-dimensionalize by PREF
-            surface_fields = surface_fields / PREF
+            # Non-dimensionalize pressure by PREF
+            surface_fields[:, 0:1] /= PREF
+            # Non-dimensionalize rest of fields by TAUREF
+            surface_fields[:, 1:] /= TAUREF
         else:
             surface_fields = None
             surface_coordinates = None

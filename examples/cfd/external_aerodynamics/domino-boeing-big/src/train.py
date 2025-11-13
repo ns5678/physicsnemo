@@ -370,11 +370,11 @@ def loss_fn_surface(
         Combined scalar and vector loss as a scalar tensor
     """
     # Separate the scalar and vector components:
-    output_scalar, output_vector = torch.split(output, [1, 1], dim=2)
-    target_scalar, target_vector = torch.split(target, [1, 1], dim=2)
+    output_scalar, output_vector = torch.split(output, [1, 3], dim=2)
+    target_scalar, target_vector = torch.split(target, [1, 3], dim=2)
 
-    numerator = torch.mean((output_scalar - target_scalar) ** 2.0)
-    vector_diff_sq = torch.mean((target_vector - output_vector) ** 2.0, (0, 1))
+    numerator = torch.mean((output_scalar - target_scalar) ** 2.0, dim=(0, 1))
+    vector_diff_sq = torch.mean((target_vector - output_vector) ** 2.0, dim=(0, 1))
     if loss_type == "mse":
         masked_loss_pres = numerator
         masked_loss_ws = torch.sum(vector_diff_sq)
@@ -389,7 +389,7 @@ def loss_fn_surface(
 
     loss = masked_loss_pres + masked_loss_ws
 
-    return loss / 2.0
+    return loss * 0.25
 
 
 def loss_fn_area(
@@ -418,10 +418,10 @@ def loss_fn_area(
 
     # Separate the scalar and vector components.
     target_scalar, target_vector = torch.split(
-        target * area_scale_factor, [1, 1], dim=2
+        target * area_scale_factor, [1, 3], dim=2
     )
     output_scalar, output_vector = torch.split(
-        output * area_scale_factor, [1, 1], dim=2
+        output * area_scale_factor, [1, 3], dim=2
     )
     # print(torch.amax(target_scalar), torch.amin(target_scalar))
     # print(torch.amax(output_scalar), torch.amin(output_scalar))
@@ -440,8 +440,7 @@ def loss_fn_area(
         masked_loss_pres /= torch.mean(target_scalar**2.0, dim=(0, 1))
 
     # Compute the mean diff**2 of the vector component, leave the last dimension:
-    masked_loss_ws = torch.mean((target_vector - output_vector) ** 2.0, (0, 1))
-
+    masked_loss_ws = torch.mean((target_vector - output_vector) ** 2.0, dim=(0, 1))
     if loss_type == "rmse":
         masked_loss_ws /= torch.mean((target_vector) ** 2.0, (0, 1))
 

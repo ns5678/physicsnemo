@@ -573,6 +573,7 @@ class dominoInference:
 
         # Reference values for pref, uinfty, qref, aref
         self.pref = np.float32(176.352)
+        self.tauref = np.float32(0.40)
         self.uinfty = np.float32(2679.505)
         self.aref = np.float32(297360.0)
         self.qref = np.float32(4.93)
@@ -859,7 +860,7 @@ class dominoInference:
 
     def compute_forces(self):
         pressure = self.out_dict["pressure_surface"]
-        wall_shear = self.out_dict["wall-shear-stress"]
+        # wall_shear = self.out_dict["wall-shear-stress"]
         
         if self.surface_mesh is None:
             surface_normals = self.stl_normals[self.sampling_indices]
@@ -872,13 +873,15 @@ class dominoInference:
                 self.surface_mesh["surface_mesh_normals"][self.sampling_indices]
             ).to(self.device)
 
+        # lift_force = torch.sum(
+        #     pressure[0, :, 0] * surface_normals[:, 2] * surface_areas
+        #     - wall_shear[0, :, 0] * surface_areas
+        # )
+        
         lift_force = torch.sum(
             pressure[0, :, 0] * surface_normals[:, 2] * surface_areas
-            - wall_shear[0, :, 0] * surface_areas
         )
-
-        self.out_dict["lift_force"] = lift_force
-        self.out_dict["lift_coeff"] = lift_force/torch.from_numpy(self.aref * self.qref)
+        self.out_dict["lift_force"] = lift_force / torch.tensor(self.aref * self.qref, dtype=torch.float32)
 
     @torch.inference_mode()
     def compute_surface_solutions(
@@ -996,8 +999,8 @@ class dominoInference:
         self.out_dict["surface_coordinates"] = (
             0.5 * (surface_coordinates_all + 1.0) * (cmax - cmin) + cmin
         )
-        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, :1] * self.pref
-        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:] * self.pref
+        self.out_dict["pressure_surface"] = surface_solutions_all[:, :, 0:1] * self.pref
+        self.out_dict["wall-shear-stress"] = surface_solutions_all[:, :, 1:2] * self.tauref
         self.sampling_indices = sampling_indices
 
         print("Total time spent in compute_surface_solutions ", time.time() - start_time)
