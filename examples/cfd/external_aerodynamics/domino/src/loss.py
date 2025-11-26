@@ -15,16 +15,202 @@
 # limitations under the License.
 
 import torch
+import numpy as np
 from typing import Literal, Any
 
 from physicsnemo.utils.domino.utils import unnormalize
 
-from typing import Literal, Any
-
 import torch.cuda.nvtx as nvtx
 
 from physicsnemo.utils.domino.utils import *
+from fvm_residuals_warp import compute_residuals_warp_cell_centered, compute_residuals_warp_cell_centered_torch
 
+
+def compute_fvm_physics_loss(
+    solutions_main: torch.Tensor,
+    solutions_neighbors: torch.Tensor,
+    batch: dict,
+    datapipe,
+    nu: float = 1.5881327800829875e-5,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Compute FVM-based physics loss by comparing predicted vs ground truth residuals.
+    
+    This function computes physics loss as the difference between:
+    1. FVM residuals computed on MODEL PREDICTIONS (maintains gradients!)
+    2. FVM residuals computed on GROUND TRUTH data
+    
+    IMPORTANT: Unnormalizes coordinates and fields before computing residuals!
+    FVM residuals must be computed in physical space for correct physics.
+    
+    Uses Warp's PyTorch interop to maintain autodifferentiability throughout.
+    Gradients can flow back through the FVM computation to the model.
+    
+    Args:
+        solutions_main: Model predictions at main cell centers [batch, n_cells, 5]
+                       where 5 = [u, v, w, p, nut] (in NORMALIZED space)
+        solutions_neighbors: Model predictions at neighbor cell centers 
+                            [batch, n_cells, max_neighbors, 5] (in NORMALIZED space)
+        batch: Batch dictionary with 'volume_cell_indices' and 'volume_fields' keys
+        datapipe: Datapipe with mesh connectivity and normalization parameters
+        nu: Kinematic viscosity (m^2/s) in physical units
+    
+    Returns:
+        Tuple of (continuity_loss, momentum_x_loss, momentum_y_loss, momentum_z_loss)
+        Each loss is MSE between predicted and ground truth residuals.
+        Gradients are preserved for backpropagation!
+    """
+    from physicsnemo.utils.domino.utils import unnormalize, unstandardize
+    
+    device = solutions_main.device
+    
+    # Keep as torch tensors (don't detach - we want gradients!)
+    # Explicitly convert to float32 (in case model output is float16 from autocast)
+    solutions_main_squeezed = solutions_main.squeeze(0).float()  # [n_cells, 5]
+    solutions_neighbors_squeezed = solutions_neighbors.squeeze(0).float()  # [n_cells, max_nb, 5]
+    
+    # ========================================
+    # STEP 0: UNNORMALIZE model predictions to physical space
+    # ========================================
+    # Model outputs are normalized/scaled, but FVM needs physical units!
+    
+    if datapipe.volume_factors is not None:
+        # Unscale fields based on scaling type
+        if datapipe.scaling_type == "mean_std_scaling":
+            # Unstandardize: x_physical = x_normalized * std + mean
+            solutions_main_squeezed = unstandardize(
+                solutions_main_squeezed,
+                datapipe.volume_factors[0].to(device),  # mean
+                datapipe.volume_factors[1].to(device),  # std
+            )
+            solutions_neighbors_squeezed = unstandardize(
+                solutions_neighbors_squeezed,
+                datapipe.volume_factors[0].to(device),
+                datapipe.volume_factors[1].to(device),
+            )
+        elif datapipe.scaling_type == "min_max_scaling":
+            # Unnormalize: x_physical = x_normalized * (max - min) + min
+            solutions_main_squeezed = unnormalize(
+                solutions_main_squeezed,
+                datapipe.volume_factors[0].to(device),  # min
+                datapipe.volume_factors[1].to(device),  # max
+            )
+            solutions_neighbors_squeezed = unnormalize(
+                solutions_neighbors_squeezed,
+                datapipe.volume_factors[0].to(device),
+                datapipe.volume_factors[1].to(device),
+            )
+    
+    # Get cell indices
+    cell_indices_tensor = batch['volume_cell_indices']
+    if isinstance(cell_indices_tensor, torch.Tensor):
+        cell_indices_np = cell_indices_tensor.cpu().numpy()
+    else:
+        cell_indices_np = cell_indices_tensor
+    if cell_indices_np.ndim > 1:
+        cell_indices_np = cell_indices_np.squeeze(0)
+    
+    n_total_cells = len(datapipe.mesh_connectivity['cell_centers'])
+    
+    # ========================================
+    # STEP 1: Compute residuals on PREDICTIONS (maintains gradients!)
+    # ========================================
+    # NOTE: solutions_main_squeezed and solutions_neighbors_squeezed are now in PHYSICAL units
+    # The mesh connectivity (coordinates, volumes) is already in physical units
+    # (loaded directly from zarr without normalization)
+    
+    # Build field data dict with torch tensors
+    velocity_pred = torch.zeros((n_total_cells, 3), dtype=torch.float32, device=device)
+    pressure_pred = torch.zeros(n_total_cells, dtype=torch.float32, device=device)
+    nut_pred = torch.zeros(n_total_cells, dtype=torch.float32, device=device)
+    
+    # Fill in main cells with model predictions
+    for i, cell_idx in enumerate(cell_indices_np):
+        velocity_pred[cell_idx] = solutions_main_squeezed[i, :3]
+        pressure_pred[cell_idx] = solutions_main_squeezed[i, 3]
+        nut_pred[cell_idx] = solutions_main_squeezed[i, 4]
+    
+    # Fill in neighbor cells with model predictions
+    # NOTE: neighbors are capped at max_neighbors (default 12) in get_neighbor_cell_centers
+    max_neighbors_in_pred = solutions_neighbors_squeezed.shape[1]  # Get actual neighbor dimension
+    
+    for i, cell_idx in enumerate(cell_indices_np):
+        nb_start = datapipe.mesh_connectivity['neighbors_offsets'][cell_idx]
+        nb_end = datapipe.mesh_connectivity['neighbors_offsets'][cell_idx + 1]
+        neighbor_ids = datapipe.mesh_connectivity['neighbors_flat'][nb_start:nb_end]
+        
+        # Cap to match the actual number of neighbors we have predictions for
+        neighbor_ids_capped = neighbor_ids[:max_neighbors_in_pred]
+        
+        for j, nb_id in enumerate(neighbor_ids_capped):
+            if nb_id >= 0:  # Valid neighbor
+                velocity_pred[nb_id] = solutions_neighbors_squeezed[i, j, :3]
+                pressure_pred[nb_id] = solutions_neighbors_squeezed[i, j, 3]
+                nut_pred[nb_id] = solutions_neighbors_squeezed[i, j, 4]
+    
+    # Create mesh data dict with torch tensors (for autodiff!)
+    field_data_pred_torch = {
+        'velocity': velocity_pred,
+        'pressure': pressure_pred,
+        'nut': nut_pred,
+    }
+    
+    # Get batched mesh data (will convert to numpy internally, but we'll pass torch tensors)
+    batched_mesh_pred = datapipe.get_batched_mesh_data(batch, field_data=field_data_pred_torch)
+    
+    # Compute FVM residuals using torch-compatible version (maintains gradients!)
+    continuity_pred_all, momentum_x_pred_all, momentum_y_pred_all, momentum_z_pred_all = \
+        compute_residuals_warp_cell_centered_torch(batched_mesh_pred, nu, device=str(device))
+    
+    # Extract residuals for sampled cells only
+    local_cell_indices = batched_mesh_pred.get('local_cell_indices', torch.arange(len(continuity_pred_all)))
+    if isinstance(local_cell_indices, np.ndarray):
+        local_cell_indices = torch.from_numpy(local_cell_indices).to(device)
+    
+    continuity_pred = continuity_pred_all[local_cell_indices]
+    momentum_x_pred = momentum_x_pred_all[local_cell_indices]
+    momentum_y_pred = momentum_y_pred_all[local_cell_indices]
+    momentum_z_pred = momentum_z_pred_all[local_cell_indices]
+    
+    # ========================================
+    # STEP 2: Compute residuals on GROUND TRUTH
+    # ========================================
+    # Use ground truth data (no field_data parameter = use mesh_connectivity data)
+    batched_mesh_gt = datapipe.get_batched_mesh_data(batch, field_data=None)
+    
+    # Compute FVM residuals on ground truth (no gradients needed here)
+    continuity_gt_all, momentum_x_gt_all, momentum_y_gt_all, momentum_z_gt_all = \
+        compute_residuals_warp_cell_centered(batched_mesh_gt, nu)
+    
+    # Extract residuals for sampled cells only
+    local_cell_indices_gt = batched_mesh_gt.get('local_cell_indices', np.arange(len(continuity_gt_all)))
+    continuity_gt = continuity_gt_all[local_cell_indices_gt]
+    momentum_x_gt = momentum_x_gt_all[local_cell_indices_gt]
+    momentum_y_gt = momentum_y_gt_all[local_cell_indices_gt]
+    momentum_z_gt = momentum_z_gt_all[local_cell_indices_gt]
+    
+    # Convert GT to torch (no gradients)
+    continuity_gt_torch = torch.from_numpy(continuity_gt.astype(np.float32)).to(device)
+    momentum_x_gt_torch = torch.from_numpy(momentum_x_gt.astype(np.float32)).to(device)
+    momentum_y_gt_torch = torch.from_numpy(momentum_y_gt.astype(np.float32)).to(device)
+    momentum_z_gt_torch = torch.from_numpy(momentum_z_gt.astype(np.float32)).to(device)
+    
+    # ========================================
+    # STEP 3: Compute loss as MSE(predicted - ground_truth)
+    # ========================================
+    # Gradients flow back through these operations!
+    continuity_loss = torch.mean((continuity_pred - continuity_gt_torch) ** 2)
+    momentum_x_loss = torch.mean((momentum_x_pred - momentum_x_gt_torch) ** 2)
+    momentum_y_loss = torch.mean((momentum_y_pred - momentum_y_gt_torch) ** 2)
+    momentum_z_loss = torch.mean((momentum_z_pred - momentum_z_gt_torch) ** 2)
+    
+    return continuity_loss, momentum_x_loss, momentum_y_loss, momentum_z_loss
+
+
+# =============================================================================
+# DEPRECATED: Old gradient-based physics loss functions
+# These are kept for reference only. Use compute_fvm_physics_loss() instead!
+# =============================================================================
 
 def compute_physics_loss(
     output: torch.Tensor,
@@ -32,12 +218,12 @@ def compute_physics_loss(
     mask: torch.Tensor,
     loss_type: Literal["mse", "rmse"],
     dims: tuple[int, ...] | None,
-    first_deriv: torch.nn.Module,
-    eqn: Any,
     bounding_box: torch.Tensor,
     vol_factors: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Compute physics-based loss terms for Navier-Stokes equations.
+    """DEPRECATED: Use compute_fvm_physics_loss() instead.
+    
+    Old gradient-based physics loss for Navier-Stokes equations.
 
     Args:
         output: Model output containing (output, coords_neighbors, output_neighbors, neighbors_list)
@@ -247,7 +433,9 @@ def loss_fn_with_physics(
     bounding_box: torch.Tensor = None,
     vol_factors: torch.Tensor = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Calculate loss with physics-based terms for appropriate equations.
+    """DEPRECATED: Use compute_fvm_physics_loss() instead.
+    
+    Old gradient-based loss with physics terms.
 
     Args:
         output: Predicted values from the model (with neighbor data when physics enabled)
@@ -444,17 +632,19 @@ def compute_loss_dict(
     integral_scaling_factor: float,
     surf_loss_scaling: float,
     vol_loss_scaling: float,
-    first_deriv: torch.nn.Module | None = None,
-    eqn: Any = None,
-    bounding_box: torch.Tensor | None = None,
-    vol_factors: torch.Tensor | None = None,
     add_physics_loss: bool = False,
+    log_physics_loss_only: bool = False,
+    # FVM-Based Physics Loss Parameters
+    prediction_vol_neighbors: torch.Tensor | None = None,
+    datapipe = None,
+    physics_loss_weight: float = 1.0,
 ) -> tuple[torch.Tensor, dict]:
     """
     Compute the loss terms in a single function call.
 
     Computes:
-    - Volume loss if prediction_vol is not None
+    - Volume loss (data loss) if prediction_vol is not None
+    - Physics loss (FVM residuals) if add_physics_loss=True or log_physics_loss_only=True
     - Surface loss if prediction_surf is not None
     - Integral loss if prediction_surf is not None
     - Total loss as a weighted sum of the above
@@ -470,36 +660,38 @@ def compute_loss_dict(
     if prediction_vol is not None:
         target_vol = batch_inputs["volume_fields"]
 
-        if add_physics_loss:
-            loss_vol = loss_fn_with_physics(
-                prediction_vol,
-                target_vol,
-                loss_fn_type.loss_type,
-                padded_value=-10,
-                first_deriv=first_deriv,
-                eqn=eqn,
-                bounding_box=bounding_box,
-                vol_factors=vol_factors,
+        # Data loss (always computed for volume)
+        loss_vol = loss_fn(
+            prediction_vol,
+            target_vol,
+            loss_fn_type.loss_type,
+            padded_value=-10,
+        )
+        loss_dict["loss_vol"] = loss_vol
+        total_loss_terms.append(loss_vol * vol_loss_scaling)
+        
+        # FVM-based physics loss (if enabled for training OR logging)
+        if (add_physics_loss or log_physics_loss_only) and datapipe is not None and prediction_vol_neighbors is not None:
+            continuity_loss, momentum_x_loss, momentum_y_loss, momentum_z_loss = compute_fvm_physics_loss(
+                solutions_main=prediction_vol,
+                solutions_neighbors=prediction_vol_neighbors,
+                batch=batch_inputs,
+                datapipe=datapipe,
+                nu=1.5881327800829875e-5,
             )
-            loss_dict["loss_vol"] = loss_vol[0]
-            loss_dict["loss_continuity"] = loss_vol[1]
-            loss_dict["loss_momentum_x"] = loss_vol[2]
-            loss_dict["loss_momentum_y"] = loss_vol[3]
-            loss_dict["loss_momentum_z"] = loss_vol[4]
-            total_loss_terms.append(loss_vol[0])
-            total_loss_terms.append(loss_vol[1])
-            total_loss_terms.append(loss_vol[2])
-            total_loss_terms.append(loss_vol[3])
-            total_loss_terms.append(loss_vol[4])
-        else:
-            loss_vol = loss_fn(
-                prediction_vol,
-                target_vol,
-                loss_fn_type.loss_type,
-                padded_value=-10,
-            )
-            loss_dict["loss_vol"] = loss_vol
-            total_loss_terms.append(loss_vol)
+            
+            # Always add to loss_dict for logging
+            loss_dict["loss_continuity"] = continuity_loss
+            loss_dict["loss_momentum_x"] = momentum_x_loss
+            loss_dict["loss_momentum_y"] = momentum_y_loss
+            loss_dict["loss_momentum_z"] = momentum_z_loss
+            
+            # Only add to total loss if add_physics_loss=True (not just logging)
+            if add_physics_loss:
+                total_loss_terms.append(continuity_loss * physics_loss_weight)
+                total_loss_terms.append(momentum_x_loss * physics_loss_weight)
+                total_loss_terms.append(momentum_y_loss * physics_loss_weight)
+                total_loss_terms.append(momentum_z_loss * physics_loss_weight)
 
     if prediction_surf is not None:
         target_surf = batch_inputs["surface_fields"]

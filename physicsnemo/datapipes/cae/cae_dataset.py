@@ -263,6 +263,9 @@ class NpzFileReader(BackendReader):
                 )
             else:
                 volume_slice = slice(0, in_data["volume_mesh_centers"].shape[0])
+        else:
+            # When not volumetric, read all data without slicing
+            volume_slice = slice(None)
 
         # This is a slower basic way to do this, to be improved:
         data = {}
@@ -323,6 +326,9 @@ class ZarrFileReader(BackendReader):
                 )
             else:
                 volume_slice = slice(0, group["volume_mesh_centers"].shape[0])
+        else:
+            # When not volumetric, read all data without slicing
+            volume_slice = slice(None)
 
         # This is a slower basic way to do this, to be improved:
         data = {}
@@ -605,6 +611,9 @@ if TENSORSTORE_AVAILABLE:
                     volume_slice = slice(
                         0, read_futures["volume_mesh_centers"].shape[0]
                     )
+            else:
+                # When not volumetric, read all data without slicing
+                volume_slice = slice(None)
 
             # Trigger an async read of each data item:
             # (Each item will be a numpy ndarray after this:)

@@ -388,18 +388,21 @@ def compute_l2(
 
     l2_dict = {}
 
+    # Access the underlying SimpleDoMINODataPipe from DataLoader wrapper
+    datapipe = dataloader.dataset if hasattr(dataloader, 'dataset') else dataloader
+    
     if pred_surface is not None:
-        _, target_surface = dataloader.unscale_model_outputs(
+        _, target_surface = datapipe.unscale_model_outputs(
             surface_fields=batch["surface_fields"]
         )
-        _, pred_surface = dataloader.unscale_model_outputs(surface_fields=pred_surface)
+        _, pred_surface = datapipe.unscale_model_outputs(surface_fields=pred_surface)
         l2_surface = metrics_fn_surface(pred_surface, target_surface)
         l2_dict.update(l2_surface)
     if pred_volume is not None:
-        target_volume, _ = dataloader.unscale_model_outputs(
+        target_volume, _ = datapipe.unscale_model_outputs(
             volume_fields=batch["volume_fields"]
         )
-        pred_volume, _ = dataloader.unscale_model_outputs(volume_fields=pred_volume)
+        pred_volume, _ = datapipe.unscale_model_outputs(volume_fields=pred_volume)
         l2_volume = metrics_fn_volume(pred_volume, target_volume)
         l2_dict.update(l2_volume)
 

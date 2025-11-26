@@ -456,16 +456,11 @@ class DoMINO(nn.Module):
                         ),
                     )
                 )
-            if hasattr(model_parameters, "return_volume_neighbors"):
-                return_volume_neighbors = model_parameters.return_volume_neighbors
-            else:
-                return_volume_neighbors = False
 
             self.solution_calculator_vol = SolutionCalculatorVolume(
                 num_variables=self.num_variables_vol,
                 num_sample_points=self.num_sample_points_volume,
                 noise_intensity=50,
-                return_volume_neighbors=return_volume_neighbors,
                 encode_parameters=self.encode_parameters,
                 parameter_model=self.parameter_model
                 if self.encode_parameters

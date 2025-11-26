@@ -64,9 +64,11 @@ from physicsnemo.datapipes.cae.domino_datapipe import (
     DoMINODataPipe,
     create_domino_dataset,
 )
+from physicsnemo.datapipes.cae.cae_dataset import CAEDataset
 from physicsnemo.models.domino.model import DoMINO
 from physicsnemo.utils.domino.utils import *
 
+from simple_datapipe import SimpleDoMINODataPipe
 from utils import ScalingFactors, get_keys_to_read, coordinate_distributed_environment
 
 # This is included for GPU memory tracking:
@@ -85,6 +87,46 @@ from loss import compute_loss_dict
 from utils import get_num_vars, load_scaling_factors, compute_l2, all_reduce_dict
 
 
+def compute_physics_loss_weight_curriculum(
+    epoch: int,
+    base_weight: float,
+    curriculum_enabled: bool,
+    warmup_epochs: int,
+    rampup_epochs: int,
+) -> float:
+    """
+    Compute the physics loss weight based on curriculum learning schedule.
+    
+    Schedule:
+    - Epochs 0 to warmup_epochs: weight = 0
+    - Epochs warmup_epochs to warmup_epochs+rampup_epochs: linear ramp from 0 to base_weight
+    - Epochs > warmup_epochs+rampup_epochs: weight = base_weight
+    
+    Args:
+        epoch: Current epoch number (0-indexed)
+        base_weight: Final target weight for physics loss
+        curriculum_enabled: Whether curriculum learning is enabled
+        warmup_epochs: Number of epochs with zero physics loss weight
+        rampup_epochs: Number of epochs to ramp up from 0 to base_weight
+    
+    Returns:
+        Current physics loss weight for this epoch
+    """
+    if not curriculum_enabled:
+        return base_weight
+    
+    if epoch < warmup_epochs:
+        # Warmup phase: no physics loss
+        return 0.0
+    elif epoch < warmup_epochs + rampup_epochs:
+        # Rampup phase: linear increase from 0 to base_weight
+        progress = (epoch - warmup_epochs) / rampup_epochs
+        return base_weight * progress
+    else:
+        # Full weight phase
+        return base_weight
+
+
 def validation_step(
     dataloader,
     model,
@@ -98,28 +140,49 @@ def validation_step(
     loss_fn_type=None,
     vol_loss_scaling=None,
     surf_loss_scaling=None,
-    first_deriv: torch.nn.Module | None = None,
-    eqn: Any = None,
-    bounding_box: torch.Tensor | None = None,
-    vol_factors: torch.Tensor | None = None,
     add_physics_loss=False,
+    log_physics_loss=False,
     autocast_enabled=None,
+    physics_loss_weight=1.0,
 ):
     dm = DistributedManager()
     running_vloss = 0.0
     with torch.no_grad():
         metrics = None
+        accumulated_losses = {}  # To accumulate loss_dict across batches
 
         for i_batch, sample_batched in enumerate(dataloader):
             sampled_batched = dict_to_device(sample_batched, device)
 
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
-                if add_physics_loss:
-                    prediction_vol, prediction_surf = model(
-                        sampled_batched, return_volume_neighbors=True
+                # Compute two-pass forward if physics loss needed (for training or logging)
+                if add_physics_loss or log_physics_loss:
+                    # NEW: Two-pass approach for FVM physics loss
+                    # Pass 1: Main cell centers
+                    prediction_vol, prediction_surf = model(sampled_batched)
+                    
+                    # Pass 2: Neighbor cell centers
+                    # dataloader is a DataLoader wrapper, access the SimpleDoMINODataPipe via .dataset
+                    datapipe = dataloader.dataset
+                    neighbor_centers, neighbor_mask = datapipe.get_neighbor_cell_centers(sampled_batched)
+                    n_cells, max_nb = neighbor_centers.shape[:2]
+                    
+                    # Process neighbors
+                    neighbor_centers_torch = torch.from_numpy(neighbor_centers).to(device)
+                    prediction_vol_neighbors = torch.zeros(
+                        1, n_cells, max_nb, prediction_vol.shape[-1], device=device
                     )
+                    
+                    for nb_idx in range(max_nb):
+                        neighbor_batch = neighbor_centers_torch[:, nb_idx, :].unsqueeze(0)
+                        input_dict_nb = {k: v for k, v in sampled_batched.items()}
+                        input_dict_nb['volume_mesh_centers'] = neighbor_batch
+                        
+                        solutions_nb_vol, _ = model(input_dict_nb)
+                        prediction_vol_neighbors[0, :, nb_idx, :] = solutions_nb_vol.squeeze(0)
                 else:
                     prediction_vol, prediction_surf = model(sampled_batched)
+                    prediction_vol_neighbors = None
 
                 loss, loss_dict = compute_loss_dict(
                     prediction_vol,
@@ -129,14 +192,24 @@ def validation_step(
                     integral_scaling_factor,
                     surf_loss_scaling,
                     vol_loss_scaling,
-                    first_deriv,
-                    eqn,
-                    bounding_box,
-                    vol_factors,
                     add_physics_loss,
+                    log_physics_loss_only=(log_physics_loss and not add_physics_loss),
+                    # FVM Physics Loss Parameters
+                    prediction_vol_neighbors=prediction_vol_neighbors,
+                    datapipe=datapipe if (add_physics_loss or log_physics_loss) else None,
+                    physics_loss_weight=physics_loss_weight,
                 )
 
             running_vloss += loss.item()
+            
+            # Accumulate loss_dict values (including physics losses if computed)
+            for key, value in loss_dict.items():
+                if isinstance(value, torch.Tensor):
+                    value = value.item()
+                if key not in accumulated_losses:
+                    accumulated_losses[key] = 0.0
+                accumulated_losses[key] += value
+            
             local_metrics = compute_l2(
                 prediction_surf, prediction_vol, sampled_batched, dataloader
             )
@@ -149,17 +222,35 @@ def validation_step(
 
     avg_vloss = running_vloss / (i_batch + 1)
     metrics = {key: metrics[key] / (i_batch + 1) for key in metrics.keys()}
+    
+    # Average the accumulated losses and convert back to tensors for all_reduce
+    avg_losses = {
+        key: torch.tensor(value / (i_batch + 1), device=device) 
+        for key, value in accumulated_losses.items()
+    }
 
     metrics = all_reduce_dict(metrics, dm)
+    avg_losses = all_reduce_dict(avg_losses, dm)
+    
+    # Convert avg_losses back to Python floats for logging
+    avg_losses = {key: value.item() if isinstance(value, torch.Tensor) else value 
+                  for key, value in avg_losses.items()}
 
     if dm.rank == 0:
         logger.info(
             f" Device {device},  batch: {i_batch + 1}, VAL loss norm: {loss.detach().item():.5f}"
         )
         tb_x = epoch_index
+        
+        # Log L2 metrics to tensorboard
         for key in metrics.keys():
             tb_writer.add_scalar(f"L2 Metrics/val/{key}", metrics[key], tb_x)
+        
+        # Log all losses (including physics losses) to tensorboard
+        for key, value in avg_losses.items():
+            tb_writer.add_scalar(f"Loss/val/{key}", value, tb_x)
 
+        # Print L2 metrics table
         metrics_table = tabulate(
             [[k, v] for k, v in metrics.items()],
             headers=["Metric", "Average Value"],
@@ -168,6 +259,17 @@ def validation_step(
         logger.info(
             f"\nEpoch {epoch_index} VALIDATION Average Metrics:\n{metrics_table}\n"
         )
+        
+        # Print loss components table (including physics losses if present)
+        if avg_losses:
+            losses_table = tabulate(
+                [[k, v] for k, v in avg_losses.items()],
+                headers=["Loss Component", "Average Value"],
+                tablefmt="pretty",
+            )
+            logger.info(
+                f"\nEpoch {epoch_index} VALIDATION Loss Components:\n{losses_table}\n"
+            )
 
     return avg_vloss
 
@@ -187,15 +289,11 @@ def train_epoch(
     loss_fn_type,
     vol_loss_scaling=None,
     surf_loss_scaling=None,
-    first_deriv: torch.nn.Module | None = None,
-    eqn: Any = None,
-    bounding_box: torch.Tensor | None = None,
-    vol_factors: torch.Tensor | None = None,
-    surf_factors: torch.Tensor | None = None,
     add_physics_loss=False,
     autocast_enabled=None,
     grad_clip_enabled=None,
     grad_max_norm=None,
+    physics_loss_weight=1.0,
 ):
     dm = DistributedManager()
 
@@ -210,17 +308,39 @@ def train_epoch(
         metrics = None
         for i_batch, sampled_batched in enumerate(dataloader):
             io_end_time = time.perf_counter()
-            if add_physics_loss:
-                autocast_enabled = False
+            # Note: Autocast is now compatible with FVM physics loss
+            # The model forward passes use mixed precision for memory efficiency,
+            # but tensors are converted to float32 before FVM computation in loss.py
 
             with autocast("cuda", enabled=autocast_enabled, cache_enabled=False):
                 with nvtx.range("Model Forward Pass"):
                     if add_physics_loss:
-                        prediction_vol, prediction_surf = model(
-                            sampled_batched, return_volume_neighbors=True
+                        # NEW: Two-pass approach for FVM physics loss
+                        # Pass 1: Main cell centers
+                        prediction_vol, prediction_surf = model(sampled_batched)
+                        
+                        # Pass 2: Neighbor cell centers
+                        # dataloader is a DataLoader wrapper, access the SimpleDoMINODataPipe via .dataset
+                        datapipe = dataloader.dataset
+                        neighbor_centers, neighbor_mask = datapipe.get_neighbor_cell_centers(sampled_batched)
+                        n_cells, max_nb = neighbor_centers.shape[:2]
+                        
+                        # Process neighbors
+                        neighbor_centers_torch = torch.from_numpy(neighbor_centers).to(device)
+                        prediction_vol_neighbors = torch.zeros(
+                            1, n_cells, max_nb, prediction_vol.shape[-1], device=device
                         )
+                        
+                        for nb_idx in range(max_nb):
+                            neighbor_batch = neighbor_centers_torch[:, nb_idx, :].unsqueeze(0)
+                            input_dict_nb = {k: v for k, v in sampled_batched.items()}
+                            input_dict_nb['volume_mesh_centers'] = neighbor_batch
+                            
+                            solutions_nb_vol, _ = model(input_dict_nb)
+                            prediction_vol_neighbors[0, :, nb_idx, :] = solutions_nb_vol.squeeze(0)
                     else:
                         prediction_vol, prediction_surf = model(sampled_batched)
+                        prediction_vol_neighbors = None
 
                 loss, loss_dict = compute_loss_dict(
                     prediction_vol,
@@ -230,11 +350,11 @@ def train_epoch(
                     integral_scaling_factor,
                     surf_loss_scaling,
                     vol_loss_scaling,
-                    first_deriv,
-                    eqn,
-                    bounding_box,
-                    vol_factors,
                     add_physics_loss,
+                    # FVM Physics Loss Parameters
+                    prediction_vol_neighbors=prediction_vol_neighbors,
+                    datapipe=datapipe if add_physics_loss else None,
+                    physics_loss_weight=physics_loss_weight,
                 )
 
                 # Compute metrics:
@@ -297,6 +417,15 @@ def train_epoch(
             logging_string += f"  GPU memory used: {gpu_memory_used:.3f} Gb (delta: {gpu_memory_delta:.3f})\n"
             logging_string += f"  Timings: (IO: {io_time:.2f}, Model: {elapsed_time - io_time:.2f}, Total: {elapsed_time:.2f})s\n"
             logger.info(logging_string)
+            
+            # Log individual loss components to tensorboard (including physics losses if present)
+            if dm.rank == 0:
+                tb_x_batch = epoch_index * len(dataloader) + i_batch + 1
+                for key, value in loss_dict.items():
+                    if isinstance(value, torch.Tensor):
+                        value = value.item()
+                    tb_writer.add_scalar(f"Loss/train/{key}", value, tb_x_batch)
+            
             gpu_start_info = nvmlDeviceGetMemoryInfo(gpu_handle)
             io_start_time = time.perf_counter()
 
@@ -381,36 +510,21 @@ def main(cfg: DictConfig) -> None:
 
     ######################################################
     # Configure physics loss
-    # Unless enabled, these are null-ops
     ######################################################
     add_physics_loss = getattr(cfg.train, "add_physics_loss", False)
-
-    if add_physics_loss:
-        from physicsnemo.sym.eq.pde import PDE
-        from physicsnemo.sym.eq.ls.grads import FirstDeriv
-        from physicsnemo.sym.eq.pdes.navier_stokes import IncompressibleNavierStokes
+    log_physics_loss = getattr(cfg.train, "log_physics_loss", False)
+    physics_loss_weight_base = getattr(cfg.train, "physics_loss_weight", 1.0)
+    
+    # Curriculum learning parameters
+    curriculum_cfg = getattr(cfg.train, "physics_loss_curriculum", None)
+    if curriculum_cfg is not None:
+        curriculum_enabled = getattr(curriculum_cfg, "enabled", False)
+        warmup_epochs = getattr(curriculum_cfg, "warmup_epochs", 50)
+        rampup_epochs = getattr(curriculum_cfg, "rampup_epochs", 50)
     else:
-        PDE = FirstDeriv = IncompressibleNavierStokes = None
-
-    # Initialize physics components conditionally
-    first_deriv = None
-    eqn = None
-    if add_physics_loss:
-        first_deriv = FirstDeriv(dim=3, direct_input=True)
-        eqn = IncompressibleNavierStokes(rho=1.226, nu="nu", dim=3, time=False)
-        eqn = eqn.make_nodes(return_as_dict=True)
-
-    # The bounding box is used in calculating the physics loss:
-    bounding_box = None
-    if add_physics_loss:
-        bounding_box = cfg.data.bounding_box
-        bounding_box = (
-            torch.from_numpy(
-                np.stack([bounding_box["max"], bounding_box["min"]], axis=0)
-            )
-            .to(vol_factors.dtype)
-            .to(dist.device)
-        )
+        curriculum_enabled = False
+        warmup_epochs = 0
+        rampup_epochs = 0
 
     ######################################################
     # Configure the dataset
@@ -433,44 +547,106 @@ def main(cfg: DictConfig) -> None:
     # It's configured properly for optional domain parallelism, and you have
     # to make sure to call set_epoch below.
 
-    train_dataloader = create_domino_dataset(
-        cfg,
-        phase="train",
+    # Create datasets using SimpleDoMINODataPipe for FVM physics loss support
+    device = dist.device if cfg.data.gpu_preprocessing else "cpu"
+    
+    # Training dataset
+    train_dataset = CAEDataset(
+        data_dir=cfg.data.input_dir,
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
-        vol_factors=vol_factors,
-        surf_factors=surf_factors,
-        device_mesh=domain_mesh,
-        placements=placements,
-        normalize_coordinates=cfg.data.normalize_coordinates,
-        sample_in_bbox=cfg.data.sample_in_bbox,
-        sampling=cfg.data.sampling,
+        output_device=device,
+        preload_depth=cfg.train.dataloader.preload_depth,
+        pin_memory=cfg.train.dataloader.pin_memory,
     )
+    
+    train_dataloader = SimpleDoMINODataPipe(
+        data_path=cfg.data.input_dir,
+        phase="train",
+        model_type=model_type,
+        grid_resolution=cfg.model.interp_res,
+        bounding_box_volume=(cfg.data.bounding_box.min, cfg.data.bounding_box.max),
+        bounding_box_surface=(cfg.data.bounding_box_surface.min, cfg.data.bounding_box_surface.max),
+        sampling=cfg.data.sampling,
+        volume_points_sample=cfg.model.volume_points_sample,
+        surface_points_sample=cfg.model.surface_points_sample,
+        geom_points_sample=cfg.model.geom_points_sample,
+        num_surface_neighbors=cfg.model.num_neighbors_surface,
+        surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+        normalize_coordinates=cfg.data.normalize_coordinates,
+        scaling_type=cfg.model.normalization,
+        volume_factors=vol_factors,
+        surface_factors=surf_factors,
+        gpu_preprocessing=cfg.data.gpu_preprocessing,
+        gpu_output=cfg.data.gpu_output,
+    )
+    train_dataloader.set_dataset(train_dataset)
+    
     train_sampler = DistributedSampler(
         train_dataloader,
         num_replicas=data_replica_size,
         rank=data_rank,
         **cfg.train.sampler,
     )
+    
+    # Wrap in DataLoader with DistributedSampler for proper DDP
+    # batch_size=1 because SimpleDoMINODataPipe already returns batched data
+    train_dataloader_wrapper = DataLoader(
+        train_dataloader,
+        batch_size=1,
+        sampler=train_sampler,
+        num_workers=0,  # Data is already on GPU from datapipe
+        collate_fn=lambda x: x[0],  # Just extract the single batch, don't collate
+        pin_memory=False,  # Already handled by datapipe
+    )
 
-    val_dataloader = create_domino_dataset(
-        cfg,
-        phase="val",
+    # Validation dataset
+    val_dataset = CAEDataset(
+        data_dir=cfg.data.input_dir,
         keys_to_read=keys_to_read,
         keys_to_read_if_available=keys_to_read_if_available,
-        vol_factors=vol_factors,
-        surf_factors=surf_factors,
-        device_mesh=domain_mesh,
-        placements=placements,
-        normalize_coordinates=cfg.data.normalize_coordinates,
-        sample_in_bbox=cfg.data.sample_in_bbox,
-        sampling=cfg.data.sampling,
+        output_device=device,
+        preload_depth=cfg.val.dataloader.preload_depth,
+        pin_memory=cfg.val.dataloader.pin_memory,
     )
+    
+    val_dataloader = SimpleDoMINODataPipe(
+        data_path=cfg.data.input_dir,
+        phase="val",
+        model_type=model_type,
+        grid_resolution=cfg.model.interp_res,
+        bounding_box_volume=(cfg.data.bounding_box.min, cfg.data.bounding_box.max),
+        bounding_box_surface=(cfg.data.bounding_box_surface.min, cfg.data.bounding_box_surface.max),
+        sampling=cfg.data.sampling,
+        volume_points_sample=cfg.model.volume_points_sample,
+        surface_points_sample=cfg.model.surface_points_sample,
+        geom_points_sample=cfg.model.geom_points_sample,
+        num_surface_neighbors=cfg.model.num_neighbors_surface,
+        surface_sampling_algorithm=cfg.model.surface_sampling_algorithm,
+        normalize_coordinates=cfg.data.normalize_coordinates,
+        scaling_type=cfg.model.normalization,
+        volume_factors=vol_factors,
+        surface_factors=surf_factors,
+        gpu_preprocessing=cfg.data.gpu_preprocessing,
+        gpu_output=cfg.data.gpu_output,
+    )
+    val_dataloader.set_dataset(val_dataset)
+    
     val_sampler = DistributedSampler(
         val_dataloader,
         num_replicas=data_replica_size,
         rank=data_rank,
         **cfg.val.sampler,
+    )
+    
+    # Wrap in DataLoader with DistributedSampler for proper DDP
+    val_dataloader_wrapper = DataLoader(
+        val_dataloader,
+        batch_size=1,
+        sampler=val_sampler,
+        num_workers=0,
+        collate_fn=lambda x: x[0],
+        pin_memory=False,
     )
 
     ######################################################
@@ -595,16 +771,42 @@ def main(cfg: DictConfig) -> None:
         start_time = time.perf_counter()
         logger.info(f"Device {dist.device}, epoch {epoch_number}:")
 
+        # Compute current physics loss weight based on curriculum
+        current_physics_loss_weight = compute_physics_loss_weight_curriculum(
+            epoch=epoch,
+            base_weight=physics_loss_weight_base,
+            curriculum_enabled=curriculum_enabled,
+            warmup_epochs=warmup_epochs,
+            rampup_epochs=rampup_epochs,
+        )
+        
         if epoch == init_epoch and add_physics_loss:
             logger.info(
-                "Physics loss enabled - mixed precision (autocast) will be disabled as physics loss computation is not supported with mixed precision"
+                "Physics loss enabled - FVM residual computation uses PyTorch-Warp interop with automatic float32 conversion"
             )
+            if curriculum_enabled:
+                logger.info(
+                    f"Physics loss curriculum enabled: warmup={warmup_epochs} epochs, rampup={rampup_epochs} epochs, final_weight={physics_loss_weight_base}"
+                )
+        
+        if epoch == init_epoch and log_physics_loss and not add_physics_loss:
+            logger.info(
+                "Physics loss logging enabled - FVM residuals will be computed during validation for monitoring (not used in training)"
+            )
+        
+        # Log current physics loss weight
+        if add_physics_loss and dist.rank == 0:
+            logger.info(f"Epoch {epoch}: Physics loss weight = {current_physics_loss_weight:.6f}")
+            writer.add_scalar("Hyperparameters/physics_loss_weight", current_physics_loss_weight, epoch)
 
         # This controls what indices to use for each epoch.
         train_sampler.set_epoch(epoch)
         val_sampler.set_epoch(epoch)
-        train_dataloader.dataset.set_indices(list(train_sampler))
-        val_dataloader.dataset.set_indices(list(val_sampler))
+        # Note: SimpleDoMINODataPipe wraps CAEDataset, so we access it via .dataset
+        # With DistributedSampler in DataLoader, indices are automatically handled
+        # if hasattr(train_dataloader, 'dataset') and hasattr(train_dataloader.dataset, 'set_indices'):
+        #     train_dataloader.dataset.set_indices(list(train_sampler))
+        #     val_dataloader.dataset.set_indices(list(val_sampler))
 
         initial_integral_factor = initial_integral_factor_orig
 
@@ -616,7 +818,7 @@ def main(cfg: DictConfig) -> None:
         model.train(True)
         epoch_start_time = time.perf_counter()
         avg_loss = train_epoch(
-            dataloader=train_dataloader,
+            dataloader=train_dataloader_wrapper,
             model=model,
             optimizer=optimizer,
             scaler=scaler,
@@ -629,14 +831,11 @@ def main(cfg: DictConfig) -> None:
             loss_fn_type=cfg.model.loss_function,
             vol_loss_scaling=cfg.model.vol_loss_scaling,
             surf_loss_scaling=surface_scaling_loss,
-            first_deriv=first_deriv,
-            eqn=eqn,
-            bounding_box=bounding_box,
-            vol_factors=vol_factors,
             add_physics_loss=add_physics_loss,
             autocast_enabled=cfg.train.amp.enabled,
             grad_clip_enabled=cfg.train.amp.clip_grad,
             grad_max_norm=cfg.train.amp.grad_max_norm,
+            physics_loss_weight=current_physics_loss_weight,  # Use curriculum weight for training
         )
         epoch_end_time = time.perf_counter()
         logger.info(
@@ -646,7 +845,7 @@ def main(cfg: DictConfig) -> None:
 
         model.eval()
         avg_vloss = validation_step(
-            dataloader=val_dataloader,
+            dataloader=val_dataloader_wrapper,
             model=model,
             device=dist.device,
             logger=logger,
@@ -658,12 +857,10 @@ def main(cfg: DictConfig) -> None:
             loss_fn_type=cfg.model.loss_function,
             vol_loss_scaling=cfg.model.vol_loss_scaling,
             surf_loss_scaling=surface_scaling_loss,
-            first_deriv=first_deriv,
-            eqn=eqn,
-            bounding_box=bounding_box,
-            vol_factors=vol_factors,
             add_physics_loss=add_physics_loss,
+            log_physics_loss=log_physics_loss,
             autocast_enabled=cfg.train.amp.enabled,
+            physics_loss_weight=1.0,  # Always use 1.0 for validation to ensure consistent comparison
         )
 
         scheduler.step()

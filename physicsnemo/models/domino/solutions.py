@@ -113,6 +113,10 @@ def sample_sphere_shell(center, r_inner, r_outer, num_points):
 class SolutionCalculatorVolume(nn.Module):
     """
     Module to calculate the output solution of the DoMINO Model for volume data.
+    
+    This calculator evaluates the solution at input volume mesh centers using
+    sphere-based sampling for local aggregation. It does NOT compute solutions
+    at neighbor positions - that should be done via separate forward passes.
     """
 
     def __init__(
@@ -121,7 +125,6 @@ class SolutionCalculatorVolume(nn.Module):
         num_sample_points: int,
         noise_intensity: float,
         encode_parameters: bool,
-        return_volume_neighbors: bool,
         parameter_model: nn.Module | None,
         aggregation_model: nn.ModuleList,
         nn_basis: nn.ModuleList,
@@ -132,7 +135,6 @@ class SolutionCalculatorVolume(nn.Module):
         self.num_sample_points = num_sample_points
         self.noise_intensity = noise_intensity
         self.encode_parameters = encode_parameters
-        self.return_volume_neighbors = return_volume_neighbors
         self.parameter_model = parameter_model
         self.aggregation_model = aggregation_model
         self.nn_basis = nn_basis
@@ -150,9 +152,22 @@ class SolutionCalculatorVolume(nn.Module):
         encoding_node: torch.Tensor,
         global_params_values: torch.Tensor,
         global_params_reference: torch.Tensor,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    ) -> torch.Tensor:
         """
-        Forward pass of the SolutionCalculator module.
+        Forward pass to compute solution at input volume mesh centers.
+        
+        Uses sphere-based random sampling around each center point for local
+        aggregation, similar to the surface calculator approach.
+        
+        Args:
+            volume_mesh_centers: Input coordinates [batch, n_points, 3]
+            encoding_g: Global geometry encoding
+            encoding_node: Node-level encoding
+            global_params_values: Global parameter values
+            global_params_reference: Reference values for parameters
+            
+        Returns:
+            output_all: Predicted field values [batch, n_points, num_variables]
         """
         if self.encode_parameters:
             param_encoding = apply_parameter_encoding(
@@ -160,53 +175,19 @@ class SolutionCalculatorVolume(nn.Module):
             )
             param_encoding = self.parameter_model(param_encoding)
 
+        # Sample points in sphere around each center for local aggregation
         volume_m_c_perturbed = [volume_mesh_centers.unsqueeze(2)]
-
-        if self.return_volume_neighbors:
-            num_hop1 = self.num_sample_points
-            num_hop2 = (
-                self.num_sample_points // 2 if self.num_sample_points != 1 else 1
-            )  # This is per 1 hop node
-            neighbors = defaultdict(list)
-
-            volume_m_c_hop1 = sample_sphere(
-                volume_mesh_centers, 1 / self.noise_intensity, num_hop1
-            )
-            # 1 hop neighbors
-            for i in range(num_hop1):
-                idx = len(volume_m_c_perturbed)
-                volume_m_c_perturbed.append(volume_m_c_hop1[:, :, i : i + 1, :])
-                neighbors[0].append(idx)
-
-            # 2 hop neighbors
-            for i in range(num_hop1):
-                parent_idx = i + 1  # Skipping the first point, which is the original
-                parent_point = volume_m_c_perturbed[parent_idx]
-
-                children = sample_sphere_shell(
-                    parent_point.squeeze(2),
-                    1 / self.noise_intensity,
-                    2 / self.noise_intensity,
-                    num_hop2,
-                )
-
-                for c in range(num_hop2):
-                    idx = len(volume_m_c_perturbed)
-                    volume_m_c_perturbed.append(children[:, :, c : c + 1, :])
-                    neighbors[parent_idx].append(idx)
-
-            volume_m_c_perturbed = torch.cat(volume_m_c_perturbed, dim=2)
-            neighbors = dict(neighbors)
-            field_neighbors = {i: [] for i in range(self.num_variables)}
-        else:
+        
+        if self.num_sample_points > 1:
             volume_m_c_sample = sample_sphere(
                 volume_mesh_centers, 1 / self.noise_intensity, self.num_sample_points
             )
             for i in range(self.num_sample_points):
                 volume_m_c_perturbed.append(volume_m_c_sample[:, :, i : i + 1, :])
 
-            volume_m_c_perturbed = torch.cat(volume_m_c_perturbed, dim=2)
+        volume_m_c_perturbed = torch.cat(volume_m_c_perturbed, dim=2)
 
+        # Compute solution for each variable
         for f in range(self.num_variables):
             for p in range(volume_m_c_perturbed.shape[2]):
                 volume_m_c = volume_m_c_perturbed[:, :, p, :]
@@ -231,16 +212,11 @@ class SolutionCalculatorVolume(nn.Module):
                             1.0 / dist
                         )
                         dist_sum += 1.0 / dist
-                if self.return_volume_neighbors:
-                    field_neighbors[f].append(self.aggregation_model[f](output))
-
-            if self.return_volume_neighbors:
-                field_neighbors[f] = torch.stack(field_neighbors[f], dim=2)
 
             if self.num_sample_points > 1:
                 output_res = (
                     0.5 * output_center + 0.5 * output_neighbor / dist_sum
-                )  # This only applies to the main point, and not the preturbed points
+                )
             else:
                 output_res = output_center
             if f == 0:
@@ -248,13 +224,7 @@ class SolutionCalculatorVolume(nn.Module):
             else:
                 output_all = torch.cat((output_all, output_res), axis=-1)
 
-        if self.return_volume_neighbors:
-            field_neighbors = torch.cat(
-                [field_neighbors[i] for i in range(self.num_variables)], dim=3
-            )
-            return output_all, volume_m_c_perturbed, field_neighbors, neighbors
-        else:
-            return output_all
+        return output_all
 
 
 class SolutionCalculatorSurface(nn.Module):

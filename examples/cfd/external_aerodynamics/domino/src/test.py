@@ -629,6 +629,7 @@ def main(cfg: DictConfig):
 
         # Read VTU
         if model_type == "volume" or model_type == "combined":
+            print(vtu_path)
             reader = vtk.vtkXMLUnstructuredGridReader()
             reader.SetFileName(vtu_path)
             reader.Update()

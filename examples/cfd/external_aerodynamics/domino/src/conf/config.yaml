@@ -51,14 +51,14 @@ variables:
   surface:
     solution:
       # The following is for AWS DrivAer dataset.
-      pMeanTrim: scalar
-      wallShearStressMeanTrim: vector
+      pMean: scalar
+      wallShearStressMean: vector
   volume:
     solution:
       # The following is for AWS DrivAer dataset.
-      UMeanTrim: vector
-      pMeanTrim: scalar
-      nutMeanTrim: scalar
+      UMean: vector
+      pMean: scalar
+      nutMean: scalar
   global_parameters:
     inlet_velocity:
       type: vector
@@ -71,11 +71,11 @@ variables:
 # │         Data Configs                      │
 # └───────────────────────────────────────────┘  
 data: # Input directory for training and validation data
-  input_dir: /user/data/aws_data_all/
-  input_dir_val: /user/data/aws_data_all_val/
+  input_dir: /workspace/domino-phy-informed-dev/dataset_rans/physicsnemo-curator/drivaerml_rans_processed_with_connectivity_fixed_with_pt_data_full/train/ # /workspace/domino-phy-informed-dev/dataset_rans/physicsnemo-curator/drivaerml_rans_processed_with_connectivity_fixed_with_pt_data/
+  input_dir_val: /workspace/domino-phy-informed-dev/dataset_rans/physicsnemo-curator/drivaerml_rans_processed_with_connectivity_fixed_with_pt_data_full/val/ # /workspace/domino-phy-informed-dev/dataset_rans/physicsnemo-curator/drivaerml_rans_processed_with_connectivity_fixed_with_pt_data/
   bounding_box: # Bounding box dimensions for computational domain
-    min: [-3.5, -2.25, -0.32]
-    max: [8.5, 2.25, 3.00]
+    min: [-42.325, -31.465, -0.32]
+    max: [63.775, 31.465, 20.165]
   bounding_box_surface: # Bounding box dimensions for car surface
     min: [-1.5, -1.4, -0.32]
     max: [5.0, 1.4, 1.4]
@@ -100,19 +100,19 @@ domain_parallelism:
 # │          Model Parameters                 │
 # └───────────────────────────────────────────┘  
 model:
-  model_type: combined # train which model? surface, volume, combined
+  model_type: volume # train which model? surface, volume, combined
   activation: "gelu" # "relu" or "gelu"
   loss_function: 
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 10000 # Generally inverse of maximum area
   interp_res: [128, 64, 64] # resolution of latent space 128, 64, 48
   use_sdf_in_basis_func: true # SDF in basis function network
-  volume_points_sample: 8192 # Number of points to sample in volume per epoch
-  surface_points_sample: 8192 # Number of points to sample on surface per epoch
+  volume_points_sample: 2048 # 8192 # Number of points to sample in volume per epoch
+  surface_points_sample: 2048 # 8192 # Number of points to sample on surface per epoch
   surface_sampling_algorithm: area_weighted #random or area_weighted
   geom_points_sample: 300_000 # Number of points to sample on STL per epoch
   num_neighbors_surface: 7 # How many neighbors on surface?
-  num_neighbors_volume: 10 # How many neighbors on volume?
+  num_neighbors_volume: 5 # How many neighbors on volume?
   combine_volume_surface: false # combine volume and surface encodings
   return_volume_neighbors: false # Whether to return volume neighbors or not
   use_surface_normals: true # Use surface normals and surface areas for surface computation?
@@ -149,7 +149,7 @@ model:
   nn_basis_functions: # Hyperparameters for basis function network
     base_layer: 512
     fourier_features: true
-    num_modes: 5
+    num_modes: 4
     activation: ${model.activation}
   local_point_conv:
     activation: ${model.activation}
@@ -160,7 +160,7 @@ model:
     base_neurons: 512
     activation: ${model.activation}
     fourier_features: true
-    num_modes: 5
+    num_modes: 4
   geometry_local: # Hyperparameters for local geometry extraction
     volume_neighbors_in_radius: [64, 128] # Number of radius points
     surface_neighbors_in_radius: [32, 128] # Number of radius points
@@ -177,7 +177,7 @@ model:
 # │          Training Configs                 │
 # └───────────────────────────────────────────┘  
 train: # Training configurable parameters
-  epochs: 1000
+  epochs: 400
   checkpoint_interval: 2
   dataloader:
     batch_size: 1
@@ -187,7 +187,15 @@ train: # Training configurable parameters
     shuffle: true
     drop_last: false
   checkpoint_dir: /user/models/ # Use only for retraining
-  add_physics_loss: false
+  # FVM Physics Loss Settings
+  add_physics_loss: true  # Set to true to enable FVM-based physics loss in training
+  log_physics_loss: true  # Set to true to compute and log physics loss during validation (even if not training with it)
+  physics_loss_weight: 10000  # Final weight for physics loss (balance data vs physics)
+  # Curriculum Learning for Physics Loss
+  physics_loss_curriculum:
+    enabled: true  # Enable curriculum learning for physics loss weight
+    warmup_epochs: 50  # Epochs with physics_loss_weight = 0
+    rampup_epochs: 50  # Epochs to ramp from 0 to physics_loss_weight
   lr_scheduler:
     name: MultiStepLR # Also supports CosineAnnealingLR  
     milestones: [50, 200, 400, 500, 600, 700, 800, 900] # only used if lr_scheduler is MultiStepLR
@@ -199,7 +207,7 @@ train: # Training configurable parameters
     lr: 0.001
     weight_decay: 0.0
   amp:
-    enabled: true
+    enabled: true  # Mixed precision training now compatible with FVM physics loss (saves memory)
     autocast:
       dtype: torch.float16
     scaler:
@@ -225,10 +233,10 @@ val: # Validation configurable parameters
 # │          Testing data Configs             │
 # └───────────────────────────────────────────┘  
 eval: # Testing configurable parameters
-  test_path: /user/testing_data # Dir for testing data in raw format (vtp, vtu ,stls)
-  save_path: /user/predicted_data # Dir to save predicted results in raw format (vtp, vtu)
+  test_path: /workspace/domino-phy-informed-dev/dataset_rans/drivaerml_rans_symlinked/batch_1/ # Dir for testing data in raw format (vtp, vtu ,stls)
+  save_path: predicted_data/${output} # Dir to save predicted results in raw format (vtp, vtu)
   checkpoint_name: DoMINO.0.455.pt # Name of checkpoint to select from saved checkpoints
-  scaling_param_path: /user/scaling_params
+  scaling_param_path: ${output}/scaling_params
   refine_stl: False # Automatically refine STL during inference
   #TODO -  This was hardcoded anyways, remove it.
   # stencil_size: 7 # Stencil size for evaluating surface and volume model
