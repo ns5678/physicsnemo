@@ -87,7 +87,7 @@ domain_parallelism:
 # │          Model Parameters                 │
 # └───────────────────────────────────────────┘  
 model:
-  model_type: combined # train which model? surface, volume, combined
+  model_type: volume # train which model? surface, volume, combined
   loss_function: 
     loss_type: "mse" # mse or rmse
     area_weighing_factor: 1000 # Generally inverse of maximum area
@@ -172,9 +172,9 @@ val: # Validation configurable parameters
 # │          Testing data Configs             │
 # └───────────────────────────────────────────┘  
 eval: # Testing configurable parameters
-  test_path: /user/datasets/drivaer_aws/drivaer_data_finetune
-  save_path: /user/nim_predictions # Dir to save predicted results in raw format (vtp, vtu)
-  checkpoint_dir: /user/nim_checkpoint
-  checkpoint_name: domino-drivesim-recent.pt # Name of checkpoint to select from saved checkpoints
+  test_path: /workspace/data/drivaer_data_finetune
+  save_path: /workspace/nim_predictions # Dir to save predicted results in raw format (vtp, vtu)
+  checkpoint_dir: /workspace/nim_checkpoint
+  checkpoint_name: domino-drivesim.pt # Name of checkpoint to select from saved checkpoints
   refine_stl: False # Automatically refine STL during inference
   stencil_size: 1 # Stencil size for evaluating surface and volume model
