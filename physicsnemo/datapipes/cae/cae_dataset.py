@@ -16,6 +16,7 @@
 
 import importlib
 import json
+import logging
 import pathlib
 import time
 from abc import ABC, abstractmethod
@@ -34,6 +35,8 @@ zarr = OptionalImport("zarr")
 
 TENSORSTORE_AVAILABLE = check_version_spec("tensorstore", hard_fail=False)
 PV_AVAILABLE = check_version_spec("pyvista", hard_fail=False)
+
+logger = logging.getLogger(__name__)
 
 # Abstractions:
 # - want to read npy/npz/.zarr/.stl/.vtp files
@@ -843,6 +846,195 @@ else:
             )
 
 
+class PmshFileReader(BackendReader):
+    """Reader for PhysicsNeMo Mesh (.pmsh/.pdmsh) sample directories.
+
+    Each sample directory contains:
+      - ``*.stl.pmsh/`` -- STL geometry (Mesh with triangle connectivity, no fields)
+      - ``*.pdmsh/``    -- DomainMesh with interior (point cloud) and boundary (surface)
+
+    The reader assembles the standard DoMINO dict keys from these files.
+    Surface data is extracted at **cell** (triangle) level using the Mesh API.
+    """
+
+    def __init__(
+        self,
+        keys_to_read: list[str] | None,
+        keys_to_read_if_available: dict[str, torch.Tensor] | None,
+        surface_field_mapping: list[dict] | None = None,
+        volume_field_mapping: list[dict] | None = None,
+        boundary_name: str = "boundary",
+    ) -> None:
+        super().__init__(keys_to_read, keys_to_read_if_available)
+        self.surface_field_mapping = surface_field_mapping or []
+        self.volume_field_mapping = volume_field_mapping or []
+        self.boundary_name = boundary_name
+
+    def _discover_paths(
+        self, sample_dir: pathlib.Path
+    ) -> tuple[pathlib.Path | None, pathlib.Path | None]:
+        """Find the .stl.pmsh and .pdmsh directories within a sample directory."""
+        stl_pmsh_path = None
+        pdmsh_path = None
+        for child in sample_dir.iterdir():
+            if child.name.endswith(".stl.pmsh") and child.is_dir():
+                stl_pmsh_path = child
+            elif child.name.endswith(".pdmsh") and child.is_dir():
+                pdmsh_path = child
+        return stl_pmsh_path, pdmsh_path
+
+    def _load_stl(self, stl_pmsh_path: pathlib.Path) -> dict[str, torch.Tensor]:
+        """Load STL geometry and return DoMINO-compatible dict entries."""
+        from physicsnemo.mesh import Mesh
+
+        stl_mesh = Mesh.load(str(stl_pmsh_path))
+
+        data = {}
+        data["stl_coordinates"] = stl_mesh.points.float()
+        data["stl_faces"] = stl_mesh.cells.reshape(-1).to(torch.int32)
+        data["stl_centers"] = stl_mesh.cell_centroids.float()
+        data["stl_areas"] = stl_mesh.cell_areas.float()
+        return data
+
+    def _load_boundary_surface(
+        self, pdmsh_path: pathlib.Path
+    ) -> dict[str, torch.Tensor]:
+        """Load boundary mesh from DomainMesh and return surface dict entries.
+
+        Surface data is extracted at the cell (triangle) level.  Normals and
+        areas come from exact triangle geometry; field data is transferred from
+        vertices to cells via ``point_data_to_cell_data()``.
+        """
+        from physicsnemo.mesh import DomainMesh
+
+        domain_mesh = DomainMesh.load(str(pdmsh_path))
+        boundary_mesh = domain_mesh.boundaries[self.boundary_name]
+
+        if self.surface_field_mapping and boundary_mesh.point_data is not None:
+            needed_fields = {entry["name"] for entry in self.surface_field_mapping}
+            available_fields = set(boundary_mesh.point_data.keys())
+            missing = needed_fields - available_fields
+            if missing:
+                raise ValueError(
+                    f"Surface fields {missing} not found in boundary point_data. "
+                    f"Available: {available_fields}"
+                )
+            boundary_mesh = boundary_mesh.point_data_to_cell_data()
+
+        data = {}
+        data["surface_mesh_centers"] = boundary_mesh.cell_centroids.float()
+        data["surface_normals"] = boundary_mesh.cell_normals.float()
+        data["surface_areas"] = boundary_mesh.cell_areas.float()
+
+        if self.surface_field_mapping:
+            field_tensors = []
+            for entry in self.surface_field_mapping:
+                field_name = entry["name"]
+                field = boundary_mesh.cell_data[field_name].float()
+                if field.ndim == 1:
+                    field = field.unsqueeze(-1)
+                field_tensors.append(field)
+            data["surface_fields"] = torch.cat(field_tensors, dim=-1)
+
+        return data
+
+    def _load_interior_volume(
+        self, pdmsh_path: pathlib.Path
+    ) -> dict[str, torch.Tensor]:
+        """Load interior point cloud from DomainMesh and return volume dict entries."""
+        from physicsnemo.mesh import DomainMesh
+
+        domain_mesh = DomainMesh.load(str(pdmsh_path))
+        interior_mesh = domain_mesh.interior
+
+        points = interior_mesh.points
+
+        if self.volume_sampling_size is not None:
+            n_total = points.shape[0]
+            volume_slice = self.select_random_sections_from_slice(
+                0,
+                n_total,
+                self.volume_sampling_size,
+            )
+        else:
+            volume_slice = slice(None)
+
+        data = {}
+        data["volume_mesh_centers"] = points[volume_slice].float()
+
+        if self.volume_field_mapping:
+            point_data = interior_mesh.point_data
+            field_tensors = []
+            for entry in self.volume_field_mapping:
+                field_name = entry["name"]
+                field = point_data[field_name][volume_slice].float()
+                if field.ndim == 1:
+                    field = field.unsqueeze(-1)
+                field_tensors.append(field)
+            data["volume_fields"] = torch.cat(field_tensors, dim=-1)
+
+        return data
+
+    def read_file(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
+        """Read a pmsh sample directory and return DoMINO-compatible tensor dict."""
+        sample_dir = filename
+        stl_pmsh_path, pdmsh_path = self._discover_paths(sample_dir)
+
+        data = {}
+        stl_keys = {"stl_coordinates", "stl_centers", "stl_faces", "stl_areas"}
+        surface_keys = {
+            "surface_mesh_centers",
+            "surface_normals",
+            "surface_areas",
+            "surface_fields",
+        }
+        volume_keys = {"volume_mesh_centers", "volume_fields"}
+
+        keys_requested = set(self.keys_to_read) if self.keys_to_read else set()
+
+        if keys_requested & stl_keys:
+            if stl_pmsh_path is None:
+                raise FileNotFoundError(f"No .stl.pmsh directory found in {sample_dir}")
+            data.update(self._load_stl(stl_pmsh_path))
+
+        if keys_requested & surface_keys:
+            if pdmsh_path is None:
+                raise FileNotFoundError(f"No .pdmsh directory found in {sample_dir}")
+            data.update(self._load_boundary_surface(pdmsh_path))
+
+        if keys_requested & volume_keys:
+            if pdmsh_path is None:
+                raise FileNotFoundError(f"No .pdmsh directory found in {sample_dir}")
+            data.update(self._load_interior_volume(pdmsh_path))
+
+        return self.fill_optional_keys(data)
+
+    def read_file_attributes(self, filename: pathlib.Path) -> dict[str, torch.Tensor]:
+        """Pmsh has no zarr-style attributes; returns empty dict."""
+        return {}
+
+    def read_file_sharded(
+        self, filename: pathlib.Path, device_mesh: torch.distributed.DeviceMesh
+    ) -> tuple[dict[str, torch.Tensor], dict[str, dict]]:
+        raise NotImplementedError(
+            "PmshFileReader does not support sharded reading yet."
+        )
+
+
+def is_pmsh_sample_directory(path: pathlib.Path) -> bool:
+    """Return True if *path* is a pmsh sample directory.
+
+    A pmsh sample directory contains at least one ``.stl.pmsh`` subdirectory
+    **and** at least one ``.pdmsh`` subdirectory.
+    """
+    if not path.is_dir():
+        return False
+    children = list(path.iterdir())
+    has_stl_pmsh = any(c.name.endswith(".stl.pmsh") and c.is_dir() for c in children)
+    has_pdmsh = any(c.name.endswith(".pdmsh") and c.is_dir() for c in children)
+    return has_stl_pmsh and has_pdmsh
+
+
 def is_vtk_directory(file: pathlib.Path) -> bool:
     """
     Check if a file is a vtk directory.
@@ -895,6 +1087,7 @@ class CAEDataset:
         device_mesh: torch.distributed.DeviceMesh | None = None,
         placements: dict[str, torch.distributed.tensor.Placement] | None = None,
         consumer_stream: torch.cuda.Stream | None = None,
+        pmsh_config: dict | None = None,
     ) -> None:
         if isinstance(data_dir, str):
             data_dir = pathlib.Path(data_dir)
@@ -908,6 +1101,7 @@ class CAEDataset:
             raise NotADirectoryError(f"Data directory {data_dir} is not a directory")
 
         self._keys_to_read = keys_to_read
+        self._pmsh_config = pmsh_config or {}
 
         # Make sure the optional keys are on the right device:
         self._keys_to_read_if_available = {
@@ -1009,8 +1203,14 @@ class CAEDataset:
             )
             return file_reader, files
             # Each "file" here is a directory of .vtp, stl, etc.
+        elif all(is_pmsh_sample_directory(file) for file in files):
+            file_reader = PmshFileReader(
+                self._keys_to_read,
+                self._keys_to_read_if_available,
+                **self._pmsh_config,
+            )
+            return file_reader, files
         else:
-            # TODO - support folders of stl, vtp, vtu.
             raise ValueError(f"Unsupported file type: {files[0]}")
 
     def _move_to_gpu(

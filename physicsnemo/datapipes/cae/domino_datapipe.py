@@ -1036,11 +1036,24 @@ def compute_scaling_factors(
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
+    pmsh_config = {}
+    if hasattr(cfg.data, "pmsh_config"):
+        pmsh_config = dict(cfg.data.pmsh_config)
+        if "surface_field_mapping" in pmsh_config:
+            pmsh_config["surface_field_mapping"] = [
+                dict(entry) for entry in pmsh_config["surface_field_mapping"]
+            ]
+        if "volume_field_mapping" in pmsh_config:
+            pmsh_config["volume_field_mapping"] = [
+                dict(entry) for entry in pmsh_config["volume_field_mapping"]
+            ]
+
     dataset = CAEDataset(
         data_dir=input_path,
         keys_to_read=target_keys,
         keys_to_read_if_available={},
         output_device=device,
+        pmsh_config=pmsh_config,
     )
 
     mean, std, min_val, max_val = compute_mean_std_min_max(
@@ -1272,6 +1285,18 @@ def create_domino_dataset(
             preload_depth = 1
             pin_memory = False
 
+        pmsh_config = {}
+        if hasattr(cfg.data, "pmsh_config"):
+            pmsh_config = dict(cfg.data.pmsh_config)
+            if "surface_field_mapping" in pmsh_config:
+                pmsh_config["surface_field_mapping"] = [
+                    dict(entry) for entry in pmsh_config["surface_field_mapping"]
+                ]
+            if "volume_field_mapping" in pmsh_config:
+                pmsh_config["volume_field_mapping"] = [
+                    dict(entry) for entry in pmsh_config["volume_field_mapping"]
+                ]
+
         dataset = CAEDataset(
             data_dir=input_path,
             keys_to_read=keys_to_read,
@@ -1282,6 +1307,7 @@ def create_domino_dataset(
             device_mesh=device_mesh,
             placements=placements,
             consumer_stream=consumer_stream,
+            pmsh_config=pmsh_config,
         )
 
         # Domain parallelism configuration:

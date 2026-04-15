@@ -1,0 +1,238 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# ┌───────────────────────────────────────────┐
+# │            Project Details                │
+# └───────────────────────────────────────────┘
+project:
+  name: DoMINO-HLPW-AoA4-Surface
+
+exp_tag: 1
+project_dir: outputs/${project.name}/
+output: outputs/${project.name}/${exp_tag}
+
+hydra:
+  run:
+    dir: ${output}
+  output_subdir: hydra
+
+resume_dir: ${output}/models
+
+# ┌───────────────────────────────────────────┐
+# │            Data Preprocessing             │
+# └───────────────────────────────────────────┘
+data_processor:
+  kind: hlpw
+  output_dir: /user/hlpw_processed/
+  input_dir: /data/hlpw/
+  cached_dir: /user/cached/hlpw/
+  use_cache: false
+  num_processors: 12
+
+# ┌───────────────────────────────────────────┐
+# │            Solution variables             │
+# └───────────────────────────────────────────┘
+# HLPW surface: T(1) + P(1) + WSS(3) = 5 components
+variables:
+  surface:
+    solution:
+      PROJ(AVG(T)): scalar
+      PROJ(AVG(P)): scalar
+      AVG(TAU_WALL(0)): scalar
+      AVG(TAU_WALL(1)): scalar
+      AVG(TAU_WALL(2)): scalar
+  volume:
+    solution:
+      avg(P): scalar
+      avg(u): vector
+  global_parameters:
+    AoA:
+      type: scalar
+      reference: 4.0
+
+# ┌───────────────────────────────────────────┐
+# │         Data Configs                      │
+# └───────────────────────────────────────────┘
+data:
+  input_dir: /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+  input_dir_val: /lustre/fsw/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+  bounding_box:
+    min: [9.2513214e+01, 3.5273414e-02, 1.7680035e+01]
+    max: [2625.9065, 1159.9321, 728.45435]
+  bounding_box_surface:
+    min: [9.2513214e+01, 3.5273414e-02, 1.7680035e+01]
+    max: [2625.9065, 1159.9321, 728.45435]
+  gpu_preprocessing: true
+  gpu_output: true
+  normalize_coordinates: true
+  sample_in_bbox: true
+  sampling: true
+  scaling_factors: ${project_dir}/scaling_factors/scaling_factors.pkl
+  volume_sample_from_disk: false
+  max_samples_for_statistics: 100
+  pmsh_config:
+    surface_field_mapping:
+      - {name: "PROJ(AVG(T))", components: 1}
+      - {name: "PROJ(AVG(P))", components: 1}
+      - {name: "AVG(TAU_WALL)", components: 3}
+    volume_field_mapping:
+      - {name: "avg(P)", components: 1}
+      - {name: "avg(u)", components: 3}
+    boundary_name: boundary
+
+# ┌───────────────────────────────────────────┐
+# │          Domain Parallelism Settings      │
+# └───────────────────────────────────────────┘
+domain_parallelism:
+  domain_size: 1
+  shard_grid: false
+  shard_points: false
+
+# ┌───────────────────────────────────────────┐
+# │          Model Parameters                 │
+# └───────────────────────────────────────────┘
+model:
+  model_type: surface
+  activation: "gelu"
+  loss_function:
+    loss_type: "mse"
+    area_weighing_factor: 1
+  interp_res: [128, 128, 64]
+  use_sdf_in_basis_func: true
+  volume_points_sample: 8192
+  surface_points_sample: 8192
+  surface_sampling_algorithm: random
+  geom_points_sample: 200_000
+  num_neighbors_surface: 7
+  num_neighbors_volume: 10
+  combine_volume_surface: false
+  return_volume_neighbors: false
+  use_surface_normals: true
+  use_surface_area: true
+  integral_loss_scaling_factor: 100
+  normalization: min_max_scaling
+  encode_parameters: false
+  surf_loss_scaling: 1.0
+  vol_loss_scaling: 1.0
+  geometry_encoding_type: both
+  solution_calculation_mode: two-loop
+  geometry_rep:
+    geo_conv:
+      base_neurons: 32
+      base_neurons_in: 1
+      base_neurons_out: 1
+      volume_radii: [0.1, 0.5, 1.0, 2.5]
+      surface_radii: [0.01, 0.05, 1.0]
+      surface_hops: 1
+      volume_hops: 1
+      volume_neighbors_in_radius: [32, 64, 128, 256]
+      surface_neighbors_in_radius: [8, 16, 128]
+      fourier_features: false
+      num_modes: 5
+      activation: ${model.activation}
+    geo_processor:
+      base_filters: 8
+      activation: ${model.activation}
+      processor_type: conv
+      self_attention: false
+      cross_attention: false
+      surface_sdf_scaling_factor: [0.01, 0.02, 0.04]
+      volume_sdf_scaling_factor: [0.04]
+  nn_basis_functions:
+    base_layer: 512
+    fourier_features: true
+    num_modes: 5
+    activation: ${model.activation}
+  local_point_conv:
+    activation: ${model.activation}
+  aggregation_model:
+    base_layer: 512
+    activation: ${model.activation}
+  position_encoder:
+    base_neurons: 512
+    activation: ${model.activation}
+    fourier_features: true
+    num_modes: 5
+  geometry_local:
+    volume_neighbors_in_radius: [64, 128]
+    surface_neighbors_in_radius: [32, 128]
+    volume_radii: [0.1, 0.25]
+    surface_radii: [0.05, 0.25]
+    base_layer: 512
+  parameter_model:
+    base_layer: 512
+    fourier_features: false
+    num_modes: 5
+    activation: ${model.activation}
+
+# ┌───────────────────────────────────────────┐
+# │          Training Configs                 │
+# └───────────────────────────────────────────┘
+train:
+  epochs: 1000
+  checkpoint_interval: 2
+  dataloader:
+    batch_size: 1
+    preload_depth: 1
+    pin_memory: True
+  sampler:
+    shuffle: true
+    drop_last: false
+  checkpoint_dir: /user/models/
+  add_physics_loss: false
+  lr_scheduler:
+    name: MultiStepLR
+    milestones: [50, 200, 400, 500, 600, 700, 800, 900]
+    gamma: 0.5
+    T_max: ${train.epochs}
+    eta_min: 1e-6
+  optimizer:
+    name: Adam
+    lr: 0.001
+    weight_decay: 0.0
+  amp:
+    enabled: true
+    autocast:
+      dtype: torch.float16
+    scaler:
+      _target_: torch.cuda.amp.GradScaler
+      enabled: ${..enabled}
+    clip_grad: true
+    grad_max_norm: 2.0
+
+
+# ┌───────────────────────────────────────────┐
+# │          Validation Configs               │
+# └───────────────────────────────────────────┘
+val:
+  dataloader:
+    batch_size: 1
+    preload_depth: 1
+    pin_memory: true
+  sampler:
+    shuffle: true
+    drop_last: false
+
+# ┌───────────────────────────────────────────┐
+# │          Testing data Configs             │
+# └───────────────────────────────────────────┘
+eval:
+  test_path: /user/testing_data
+  save_path: /user/predicted_data
+  checkpoint_name: DoMINO.0.455.pt
+  scaling_param_path: /user/scaling_params
+  refine_stl: False
+  num_points: 1_240_000
