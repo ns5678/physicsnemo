@@ -464,6 +464,43 @@ class SetGlobalField(MeshTransform):
             global_data=new_gd,
         )
 
+    def apply_to_domain(self, domain: DomainMesh) -> DomainMesh:
+        """Inject fields into the DomainMesh-level ``global_data``.
+
+        ``MeshToTensorDict.apply_to_domain`` serialises ``domain.global_data``
+        (not sub-mesh global_data) into the output TensorDict's top-level
+        ``global_data``, which is where ``RestructureTensorDict`` paths like
+        ``global_data.inlet_velocity`` resolve.  Writing at the domain level
+        is therefore required for those paths to hit.
+
+        The base-class default is also retained (via ``super``) so that any
+        downstream transform that reads per-sub-mesh ``global_data`` (e.g.
+        rotation transforms that need to rotate a wind vector attached to
+        each mesh) continues to see the field on interior and boundaries.
+
+        Parameters
+        ----------
+        domain : DomainMesh
+            Input domain mesh (interior + boundaries).
+
+        Returns
+        -------
+        DomainMesh
+            Domain with ``self._fields`` written into both the
+            domain-level and every sub-mesh's ``global_data``.
+        """
+        new_domain = super().apply_to_domain(domain)
+        new_gd = new_domain.global_data.clone()
+        device = new_domain.interior.points.device
+        dtype = new_domain.interior.points.dtype
+        for k, v in self._fields.items():
+            new_gd[k] = v.to(device=device, dtype=dtype)
+        return DomainMesh(
+            interior=new_domain.interior,
+            boundaries=new_domain.boundaries,
+            global_data=new_gd,
+        )
+
     def extra_repr(self) -> str:
         shapes = {k: tuple(v.shape) for k, v in self._fields.items()}
         return f"fields={shapes}"
@@ -707,6 +744,28 @@ class ComputeSurfaceNormals(MeshTransform):
                 cell_data=mesh.cell_data,
                 global_data=mesh.global_data,
             )
+
+    def apply_to_domain(self, domain: DomainMesh) -> DomainMesh:
+        """Apply surface-normal computation to boundaries only.
+
+        The interior of a :class:`DomainMesh` is typically a volumetric
+        point cloud (codimension > 1) and has no well-defined cell
+        normals.  Boundaries are codimension-1 surfaces where normals
+        are defined, so we restrict the broadcast to the boundary set
+        and leave the interior cloned unchanged.
+
+        Parameters
+        ----------
+        domain : DomainMesh
+            Input domain mesh (interior + boundaries).
+
+        Returns
+        -------
+        DomainMesh
+            Domain with normals written into each boundary's cell_data
+            or point_data under ``field_name``; interior is unchanged.
+        """
+        return domain.apply_to_meshes(self, interior=False, boundaries=True)
 
     def extra_repr(self) -> str:
         return f"store_as={self.store_as!r}, field_name={self.field_name!r}"
