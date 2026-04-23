@@ -1,0 +1,234 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# HLPW volume dataset for DoMINO (interior pressure + velocity predictor).
+#
+# Legacy-faithful port of ``hlpw_domino/src/conf/config.yaml`` (git sha
+# ``d2eb6cc8``) onto PR #1512's Mesh-native datapipe API.  Mirrors
+# ``hlpw_domino_surface.yaml`` but emits volume-interior targets instead
+# of surface-boundary targets; drops the surface-field rename + non-dim
+# block (not needed when the model reads interior fields only) and
+# flips the positional-encoding flags to volume-only.
+
+name: hlpw_domino_volume
+
+train_datadir: /lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+
+metadata:
+  U_inf: [2672.95, 0.0, 186.92]
+  p_inf: 176.352
+  rho_inf: 1.3756e-6
+  T_inf: 518.67
+  L_ref: 1156.75
+  AoA: 4.0
+
+bbox:
+  volume:
+    min: [92.5132,   0.0353,  17.6800]
+    max: [2625.9065, 1159.9321, 728.4544]
+  surface:
+    min: [92.5132,   0.0353,  17.6800]
+    max: [2625.9065, 1159.9321, 728.4544]
+
+grid_resolution: [128, 128, 64]
+
+pipeline:
+  reader:
+    _target_: ${dp:DomainMeshReader}
+    path: ${train_datadir}
+    pattern: "**/domain_*.pdmsh"
+    subsample_n_points: ${sampling_resolution}
+    subsample_n_cells: ${sampling_resolution}
+    extra_boundaries:
+      stl_geometry:
+        # HLPW ships one STL per case directory named ``<case>.stl.pmsh``
+        # (no ``_single_solid`` suffix).  Keep this loose to match.
+        pattern: "*.stl.pmsh"
+
+  # Legacy had no data-augmentation pass; keeping the block empty matches
+  # strict legacy faithfulness.
+
+  transforms:
+    # 1) Inject the AoA scalar into global_data.
+    - _target_: ${dp:SetGlobalField}
+      fields:
+        global_params_values:
+          - - ${metadata.AoA}
+        global_params_reference:
+          - - ${metadata.AoA}
+
+    # 2a) Legacy ``sample_in_bbox: true`` on the volume interior
+    #     (domino_datapipe.py l548-559 @ d2eb6cc8).
+    - _target_: ${dp:CropMeshToBBox}
+      target: interior
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+
+    # 2b) Legacy ``process_surface`` also filters surface boundary cells
+    #     against the VOLUME bbox (domino_datapipe.py l418-431 @ d2eb6cc8,
+    #     explicit comment: "this is using the VOLUME bounding box").
+    #     Applied here too even though the volume-model run doesn't emit
+    #     surface outputs, because the surface boundary feeds COM / kNN
+    #     and legacy applied the filter unconditionally.
+    - _target_: ${dp:CropMeshToBBox}
+      target: boundary
+      boundary_name: boundary
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+
+    # 3) Non-dimensionalize volume fields.
+    - _target_: ${dp:NonDimensionalizeByMetadata}
+      fields:
+        avg(P): pressure
+        avg(u): velocity
+      section: point_data
+
+    - _target_: ${dp:RenameMeshFields}
+      point_data:
+        avg(P): pressure
+        avg(u): velocity
+
+    # 4) Z-score normalize volume fields.  See ``collect_stats
+    #    --with-transforms`` instructions in the surface YAML; placeholder
+    #    mean/std kept inline until the .pt is generated.
+    - _target_: ${dp:NormalizeMeshFields}
+      section: point_data
+      fields:
+        pressure: {type: scalar, mean: 0.0, std: 0.2}
+        velocity: {type: vector, mean: [1.0, 0.0, 0.07], std: 0.2}
+
+    # 5) Latent-grid SDF: volume bbox (for DoMINO's ``grid``/``sdf_grid``).
+    #    Normalized-coords mode matches legacy domino_datapipe l712-727.
+    - _target_: ${dp:ComputeGridSDFFromBoundary}
+      boundary_name: stl_geometry
+      grid_resolution: ${grid_resolution}
+      grid_field: grid
+      sdf_field: sdf_grid
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+      normalize_coords: true
+
+    # 6) Latent-grid SDF: surface bbox (for DoMINO's surf_grid).  Legacy
+    #    computes both unconditionally; the volume-only model still uses
+    #    surf_grid through geometry_encoding_type=both.
+    - _target_: ${dp:ComputeGridSDFFromBoundary}
+      boundary_name: stl_geometry
+      grid_resolution: ${grid_resolution}
+      grid_field: surf_grid
+      sdf_field: sdf_surf_grid
+      bbox_min: ${bbox.surface.min}
+      bbox_max: ${bbox.surface.max}
+      normalize_coords: true
+
+    # 7) Point-level SDF on interior points (sdf_nodes) in the NORMALIZED
+    #    volume frame.  ``bbox_min``/``bbox_max`` trigger an inline rescale
+    #    of the STL and the interior queries into [-1, 1] before the BVH
+    #    call, mirroring legacy ``process_volume`` l614-630 @ d2eb6cc8
+    #    where both SDF calls are made on ``normed_vertices``.  The
+    #    ``closest_points_field`` persists the hit points already returned
+    #    by the kernel so step 8 can reuse them instead of running a
+    #    second BVH pass.  Normals are not emitted here (and cannot be,
+    #    combined with bbox) -- the volume path does not consume them.
+    - _target_: ${dp:ComputeSDFFromBoundary}
+      boundary_name: stl_geometry
+      sdf_field: sdf
+      normals_field: null
+      closest_points_field: sdf_closest_points
+      use_winding_number: true
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+
+    # 8) DoMINO volume-side positional encodings.  COM is computed once
+    #    from unnormalized STL centroids + areas; the ``volume_bbox_*``
+    #    kwargs trigger an inline rescale of the interior points, the STL
+    #    vertices, and the COM into ``[-1, 1]`` just before the
+    #    subtractions that emit ``pos_volume_center_of_mass`` and
+    #    ``pos_volume_closest``.  ``sdf_closest_points_field`` points at
+    #    the field written by step 7 (already in the normalized frame),
+    #    so this transform reuses the closest points instead of invoking
+    #    ``signed_distance_field`` a second time.
+    - _target_: ${dp:ComputeDoMINOPositionalEncodings}
+      stl_boundary: stl_geometry
+      target_boundary: boundary
+      pos_surface_com_field: pos_surface_center_of_mass
+      pos_volume_closest_field: pos_volume_closest
+      pos_volume_com_field: pos_volume_center_of_mass
+      compute_volume_encodings: true
+      compute_surface_encodings: false
+      sdf_closest_points_field: sdf_closest_points
+      # Volume-frame bbox: legacy uses c_min/c_max inside process_volume.
+      volume_bbox_min: ${bbox.volume.min}
+      volume_bbox_max: ${bbox.volume.max}
+
+    # 8b) Lift cell centroids and areas into explicit cell_data BEFORE
+    #     NormalizeDomainByBBox so the centroids get rescaled alongside
+    #     boundary points.  The volume collate mapping doesn't consume
+    #     these fields (volume-mode DoMINO reads interior tensors only),
+    #     but this mirrors the surface YAML step-for-step and keeps the
+    #     surface boundary's cell_data self-consistent for any downstream
+    #     diagnostics.  No-op if the boundary has no cells.
+    - _target_: ${dp:LiftCellCentroidsAndAreas}
+      boundary_name: boundary
+      centroids_field: cell_centroids
+      areas_field: cell_areas
+
+    # 9) Rescale geometry tensors into [-1, 1].  Interior points are
+    #    normalized (volume frame).  Surface boundary is normalized so the
+    #    downstream kNN/centroid references stay consistent, even though
+    #    the model's output is volume-only.  STL stays in world coords
+    #    (geometry_coordinates is consumed unnormalized, legacy parity).
+    - _target_: ${dp:NormalizeDomainByBBox}
+      surface_bbox_min: ${bbox.surface.min}
+      surface_bbox_max: ${bbox.surface.max}
+      volume_bbox_min:  ${bbox.volume.min}
+      volume_bbox_max:  ${bbox.volume.max}
+      normalize_interior: true
+      surface_boundaries: [boundary]
+      # surf_grid / grid already normalized inside ComputeGridSDFFromBoundary.
+      surface_grid_fields: []
+      volume_grid_fields: []
+
+    # 10) Sub-sample the STL to legacy ``geom_points_sample=200_000``.
+    - _target_: ${dp:SubsampleNamedBoundary}
+      boundary_name: stl_geometry
+      n_points: 200000
+
+    # 11) Terminal.
+    - _target_: ${dp:MeshToTensorDict}
+    - _target_: ${dp:RestructureTensorDict}
+      groups:
+        input:
+          geometry_coordinates: boundaries.stl_geometry.points
+          grid: global_data.grid
+          sdf_grid: global_data.sdf_grid
+          surf_grid: global_data.surf_grid
+          sdf_surf_grid: global_data.sdf_surf_grid
+          volume_mesh_centers: interior.points
+          sdf_nodes: interior.point_data.sdf
+          pos_volume_closest: interior.point_data.pos_volume_closest
+          pos_volume_center_of_mass: interior.point_data.pos_volume_center_of_mass
+          global_params_values: global_data.global_params_values
+          global_params_reference: global_data.global_params_reference
+          volume_min_max: global_data.volume_min_max
+        output:
+          pressure: interior.point_data.pressure
+          velocity: interior.point_data.velocity
+
+targets:
+  pressure: scalar
+  velocity: vector
+
+metrics: [l1, l2, mae]

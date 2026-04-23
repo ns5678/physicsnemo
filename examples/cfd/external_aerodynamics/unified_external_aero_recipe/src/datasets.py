@@ -58,6 +58,7 @@ from physicsnemo.datapipes.transforms.mesh import NormalizeMeshFields
 import nondim  # noqa: F401  (registers NonDimensionalizeByMetadata)
 import sdf  # noqa: F401  (registers ComputeSDFFromBoundary, DropBoundary)
 import merge_global_data  # noqa: F401  (registers MeshReaderWithGlobalData)
+import domino_transforms  # noqa: F401  (registers DoMINO-specific transforms)
 from metrics import MetricName
 from utils import FieldType
 

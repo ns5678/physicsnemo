@@ -1,0 +1,323 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# HLPW (High Lift Prediction Workshop) surface dataset for DoMINO.
+#
+# Legacy-faithful port of
+# ``examples/cfd/external_aerodynamics/hlpw_domino/src/conf/config.yaml``
+# (git sha ``d2eb6cc8``) onto PR #1512's Mesh-native datapipe API.  The
+# transform chain mirrors ``DoMINODataPipe.process_data`` step-for-step:
+#
+#   1. Inject the AoA scalar as ``global_params_values`` / ``_reference``.
+#   2. Crop the interior to the volume bounding box (legacy
+#      ``sample_in_bbox: true`` on interior coords only; surface boundary
+#      is left untouched).
+#   3. Non-dimensionalize surface fields by freestream metadata and rename
+#      to tidy keys (``temperature``, ``pressure``, ``tau_wall``).
+#   4. Standardize those fields via :class:`NormalizeMeshFields` using
+#      dataset-wide statistics produced by ``collect_stats``.
+#   5. Compute surface normals, cell-wise kNN neighbors, grid SDF on the
+#      surface-bbox latent grid (in normalized coordinates), point-wise SDF
+#      on the interior, and DoMINO positional encodings.
+#   6. Rescale every geometry tensor (interior points, surface boundary,
+#      STL-free grids) into ``[-1, 1]`` using the legacy bbox; emit the
+#      ``surface_min_max`` / ``volume_min_max`` denormalization tensors.
+#      The STL boundary stays in world coordinates because legacy ships
+#      ``geometry_coordinates`` unnormalized.
+#   7. Sub-sample the STL to the legacy ``geom_points_sample=200_000``.
+#   8. Lift the surface boundary's cell centroids and cell areas into
+#      explicit ``cell_data`` entries so they survive the terminal
+#      Mesh -> TensorDict conversion.
+#   9. Terminal: ``MeshToTensorDict`` + ``RestructureTensorDict`` project
+#      to the flat ``input/``-``output/`` dict that ``DoMINO.forward``
+#      consumes (via the ``domino_hlpw_surface`` collate mapping).
+#
+# Contract assumption (data-prep side): every .pdmsh file has been written
+# with shuffled on-disk point and cell order.  The sampler sanity test
+# ``test/datapipes/domino_parity/test_sampler_sanity.py`` guards against
+# inadvertent spatial ordering by asserting uniform coverage statistics.
+
+name: hlpw_domino_surface
+
+# Root directory containing ``<case>/domain_<case>.pdmsh`` and
+# ``<case>/<case>.stl.pmsh``.  Overridden by the training config's data
+# block; default is the HLPW AoA4 dataset on lustre fs1.
+train_datadir: /lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+
+# HLPW uses the slug-inch-second-Rankine unit system, matching the PR's
+# highlift_surface.yaml convention.
+metadata:
+  U_inf: [2672.95, 0.0, 186.92]   # 2679.505 in/s at AoA=4° (x, y, z)
+  p_inf: 176.352                   # 14.696 psi × 12 → slug/(in·s²)
+  rho_inf: 1.3756e-6               # 0.002377 slug/ft³ → slug/in³
+  T_inf: 518.67                    # [°R]
+  L_ref: 1156.75                   # [in] -- span (HLPW reference length)
+  AoA: 4.0                          # global angle-of-attack parameter
+
+# Axis-aligned bounding box around the HLPW geometry + wake region.
+# Values taken from the legacy hlpw_domino/src/conf/config.yaml.  For
+# HLPW the surface and volume bboxes coincide; keeping them as two
+# distinct resolvable keys matches the legacy schema (``bounding_box``
+# vs ``bounding_box_surface``) and lets downstream models key off either.
+bbox:
+  volume:
+    min: [92.5132,   0.0353,  17.6800]
+    max: [2625.9065, 1159.9321, 728.4544]
+  surface:
+    min: [92.5132,   0.0353,  17.6800]
+    max: [2625.9065, 1159.9321, 728.4544]
+
+# DoMINO latent-grid resolution. Preserves the legacy config's value.
+grid_resolution: [128, 128, 64]
+
+pipeline:
+  reader:
+    _target_: ${dp:DomainMeshReader}
+    path: ${train_datadir}
+    pattern: "**/domain_*.pdmsh"
+    # Subsampling on the reader fast-path (contiguous-block on memmap).
+    # sampling_resolution is provided by the training config; same value
+    # is used for volume interior points and boundary cells.
+    subsample_n_points: ${sampling_resolution}
+    subsample_n_cells: ${sampling_resolution}
+    extra_boundaries:
+      stl_geometry:
+        # HLPW ships one STL per case directory named ``<case>.stl.pmsh``
+        # (no ``_single_solid`` suffix).  Keep this loose to match.
+        pattern: "*.stl.pmsh"
+
+  # Legacy had no data-augmentation pass; keeping the block empty matches
+  # strict legacy faithfulness.  Re-introduce per-run if ablation needs it.
+
+  transforms:
+    # 1) Inject the AoA scalar so DoMINO's parameter encoder sees a (1, 1)
+    #    ``global_params_values`` tensor and the training-time reference
+    #    (same shape).  Legacy spelled this as ``global_parameters.AoA``.
+    - _target_: ${dp:SetGlobalField}
+      fields:
+        global_params_values:
+          - - ${metadata.AoA}
+        global_params_reference:
+          - - ${metadata.AoA}
+
+    # 2a) Legacy ``sample_in_bbox: true`` on the volume interior
+    #     (domino_datapipe.py l548-559 @ d2eb6cc8).
+    - _target_: ${dp:CropMeshToBBox}
+      target: interior
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+
+    # 2b) Legacy ``process_surface`` also filters surface boundary cells
+    #     against the VOLUME bbox (domino_datapipe.py l418-431 @ d2eb6cc8,
+    #     explicit comment: "this is using the VOLUME bounding box").
+    - _target_: ${dp:CropMeshToBBox}
+      target: boundary
+      boundary_name: boundary
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+
+    # 3) Non-dimensionalize surface fields using freestream metadata.
+    #    HLPW PMSH files ship solution fields on ``point_data`` (verified by
+    #    ``inspect_pmsh.py``).  The surface pipeline is point-centered:
+    #    solution fields and geometric features alike live on point_data
+    #    and ``surface_mesh_centers`` is ``boundaries.boundary.points``.
+    - _target_: ${dp:NonDimensionalizeByMetadata}
+      fields:
+        PROJ(AVG(T)): temperature
+        PROJ(AVG(P)): pressure
+        AVG(TAU_WALL): stress
+      section: point_data
+
+    # 4) Rename to simpler keys that NormalizeMeshFields / output/ paths expect.
+    - _target_: ${dp:RenameMeshFields}
+      point_data:
+        PROJ(AVG(T)): temperature
+        PROJ(AVG(P)): pressure
+        AVG(TAU_WALL): tau_wall
+
+    # 5) Z-score normalization using dataset-wide statistics.  Generated via::
+    #
+    #        python -m src.collect_stats \
+    #            --configs conf/dataset/hlpw_domino_surface.yaml \
+    #            --with-transforms
+    #
+    #    The --with-transforms flag runs the deterministic portion of this
+    #    pipeline (SetGlobalField + CropMeshToBBox + NonDimensionalizeByMetadata
+    #    + RenameMeshFields) so the stats reflect what the model actually sees.
+    #    Until that run produces the .pt, this transform falls back to an
+    #    explicit placeholder block further below; swap back to ``stats_file:``
+    #    once the file exists.
+    - _target_: ${dp:NormalizeMeshFields}
+      section: point_data
+      # Dataset-wide mean/std per field after NonDim.  Schema:
+      # ``{field: {type, mean, std}}``.  Generate with::
+      #     python collect_hlpw_surface_stats.py
+      # from the HLPW-Benchmarking root.  Path resolves relative to the
+      # recipe root via ``_resolve_transform_paths`` in src/datasets.py.
+      stats_file: stats/hlpw_domino_surface.pt
+
+    # 6) Compute surface normals as point_data (angle-area-weighted vertex
+    #    normals; one per vertex).  Stored under ``point_data`` to match the
+    #    point-centered surface pipeline.
+    - _target_: ${dp:ComputeSurfaceNormals}
+      store_as: point_data
+      field_name: surface_normals
+
+    # 7) Retired (checklist §1.2): SurfaceKNNNeighbors produced
+    #    surface_mesh_neighbors / _normals / _areas from the already-subsampled
+    #    mesh, which gave the downstream IDW smoother a bandwidth that scaled
+    #    with sampling_resolution.  SolutionCalculatorSurface now mirrors
+    #    SolutionCalculatorVolume and synthesises its own neighbours inside
+    #    forward() at a fixed radius, so these cell_data fields are no longer
+    #    needed.  Keep this comment as a paper trail.
+
+    # 8) Latent-grid SDF on the surface bbox (DoMINO's surf_grid).  Legacy
+    #    computes this in the normalized [-1, 1] frame (domino_datapipe.py
+    #    l712-727 @ d2eb6cc8); normalize_coords=true stores the normalized
+    #    grid in global_data.surf_grid directly.
+    - _target_: ${dp:ComputeGridSDFFromBoundary}
+      boundary_name: stl_geometry
+      grid_resolution: ${grid_resolution}
+      grid_field: surf_grid
+      sdf_field: sdf_surf_grid
+      bbox_min: ${bbox.surface.min}
+      bbox_max: ${bbox.surface.max}
+      normalize_coords: true
+
+    # 9) Latent-grid SDF on the volume bbox (DoMINO's grid).  The surface-only
+    #    model mode doesn't consume this, but legacy computes it unconditionally
+    #    and some downstream collate mappings reference it -- keep for parity
+    #    with the combined-mode variant.
+    - _target_: ${dp:ComputeGridSDFFromBoundary}
+      boundary_name: stl_geometry
+      grid_resolution: ${grid_resolution}
+      grid_field: grid
+      sdf_field: sdf_grid
+      bbox_min: ${bbox.volume.min}
+      bbox_max: ${bbox.volume.max}
+      normalize_coords: true
+
+    # 10) Point-level SDF on interior points (DoMINO's sdf_nodes).  Runs in
+    #     world coordinates; interior points are still in world coords at
+    #     this stage (NormalizeDomainByBBox below rescales them after this).
+    - _target_: ${dp:ComputeSDFFromBoundary}
+      boundary_name: stl_geometry
+      sdf_field: sdf
+      normals_field: null
+      use_winding_number: true
+
+    # 11) DoMINO positional encodings relative to the STL's area-weighted
+    #     centre of mass.  The COM is computed once from unnormalized
+    #     STL centroids + areas; the ``surface_bbox_*`` kwargs trigger an
+    #     inline rescale of BOTH operands into ``[-1, 1]`` just before the
+    #     subtraction, mirroring legacy ``process_surface`` l493-499 @
+    #     d2eb6cc8.  Surface encoding only for this model mode; volume
+    #     encoding is unused when model_type=surface.
+    - _target_: ${dp:ComputeDoMINOPositionalEncodings}
+      stl_boundary: stl_geometry
+      target_boundary: boundary
+      pos_surface_com_field: pos_surface_center_of_mass
+      pos_volume_closest_field: pos_volume_closest
+      pos_volume_com_field: pos_volume_center_of_mass
+      compute_volume_encodings: false
+      compute_surface_encodings: true
+      # Point-centered pipeline: emit one encoding per vertex of the target
+      # boundary (shape ``(N_points, 3)``) and write it to ``point_data``.
+      # Pairs with ``surface_mesh_centers: boundaries.boundary.points`` below.
+      surface_target_section: point_data
+      # Surface-frame bbox: legacy uses s_min/s_max inside process_surface.
+      surface_bbox_min: ${bbox.surface.min}
+      surface_bbox_max: ${bbox.surface.max}
+
+    # 12) Retired: ``LiftCellCentroidsAndAreas`` emitted per-cell centroids
+    #     and areas for the cell-centered surface pipeline.  The point-
+    #     centered variant uses ``boundaries.boundary.points`` directly as
+    #     ``surface_mesh_centers`` and drops ``surface_areas`` entirely
+    #     (model runs with ``use_surface_area: false``).
+
+    # 13) Rescale every geometry tensor into [-1, 1] using legacy HLPW bboxes.
+    #     Emits surface_min_max / volume_min_max as (2, 3) global_data tensors.
+    #     The STL boundary stays in world coords (geometry_coordinates is
+    #     consumed unnormalized, matching legacy process_data output).
+    #     ``centroids_field`` + ``neighbor_coord_fields`` are enumerated
+    #     explicitly so the set of world-coord cell_data tensors that share a
+    #     frame with the boundary points is visible at the yaml level.  This
+    #     matches legacy ``DoMINODataPipe.process_surface`` which normalizes
+    #     ``surface_coordinates`` and ``surface_neighbors`` together.
+    - _target_: ${dp:NormalizeDomainByBBox}
+      surface_bbox_min: ${bbox.surface.min}
+      surface_bbox_max: ${bbox.surface.max}
+      volume_bbox_min:  ${bbox.volume.min}
+      volume_bbox_max:  ${bbox.volume.max}
+      normalize_interior: true
+      surface_boundaries: [boundary]
+      centroids_field: cell_centroids
+      # surface_mesh_neighbors is no longer produced (see §1.2 note above);
+      # leave this list empty so NormalizeDomainByBBox rescales only the
+      # centroids field.
+      neighbor_coord_fields: []
+      # surf_grid / grid were already stored normalized by ComputeGridSDFFromBoundary
+      # with normalize_coords=true; list them as empty here to avoid a
+      # double-normalization pass.
+      surface_grid_fields: []
+      volume_grid_fields: []
+
+    # 14) Sub-sample the STL to legacy ``geom_points_sample=200_000``.
+    #     Done after everything above so the SDF / COM / positional
+    #     encodings all use the full STL -- only geometry_coordinates
+    #     downstream sees the subset.
+    - _target_: ${dp:SubsampleNamedBoundary}
+      boundary_name: stl_geometry
+      n_points: 200000
+
+    # 15) Terminal: Mesh -> TensorDict, then project to the flat
+    #     ``input/`` / ``output/`` groups that the collate layer maps
+    #     into DoMINO's ``data_dict`` + ``fields`` contract.
+    - _target_: ${dp:MeshToTensorDict}
+    - _target_: ${dp:RestructureTensorDict}
+      groups:
+        input:
+          # STL-derived geometry (unnormalized point cloud; legacy parity).
+          geometry_coordinates: boundaries.stl_geometry.points
+          # Surface-frame global grids (already normalized).
+          surf_grid: global_data.surf_grid
+          sdf_surf_grid: global_data.sdf_surf_grid
+          # Surface boundary tensors (now in normalized coords).  The
+          # pipeline is point-centered: ``surface_mesh_centers`` == the
+          # boundary vertex positions; ``surface_normals`` are vertex
+          # normals; ``pos_surface_center_of_mass`` has one entry per
+          # vertex.  ``surface_areas`` is dropped (model uses
+          # ``use_surface_area: false``).
+          surface_mesh_centers: boundaries.boundary.points
+          surface_normals: boundaries.boundary.point_data.surface_normals
+          # Retired per checklist §1.2: SolutionCalculatorSurface no longer
+          # reads surface_mesh_neighbors / _normals / _areas.
+          pos_surface_center_of_mass: boundaries.boundary.point_data.pos_surface_center_of_mass
+          # AoA scalar + reference and the bbox denormalization corners.
+          global_params_values: global_data.global_params_values
+          global_params_reference: global_data.global_params_reference
+          surface_min_max: global_data.surface_min_max
+        output:
+          temperature: boundaries.boundary.point_data.temperature
+          pressure: boundaries.boundary.point_data.pressure
+          tau_wall: boundaries.boundary.point_data.tau_wall
+
+targets:
+  temperature: scalar
+  pressure: scalar
+  tau_wall: vector
+
+metrics: [l1, l2, mae]
