@@ -292,13 +292,12 @@ class DoMINO(Module):
         self.encode_parameters = model_parameters.encode_parameters
         self.geo_encoding_type = model_parameters.geometry_encoding_type
 
-        if self.use_surface_normals:
-            if not self.use_surface_area:
-                input_features_surface = input_features + 3
-            else:
-                input_features_surface = input_features + 4
-        else:
-            input_features_surface = input_features
+        # The two-loop SolutionCalculatorSurface (solutions.py:473-610) feeds
+        # raw (B, N, 3) centres to nn_basis_surf; the legacy kNN path that
+        # concatenated [centres, normals, areas] was retired per checklist
+        # §1.2, so `use_surface_normals`/`use_surface_area` no longer affect
+        # basis input size.
+        input_features_surface = input_features
 
         if self.encode_parameters:
             # Defining the parameter model
@@ -444,11 +443,14 @@ class DoMINO(Module):
                     )
                 )
 
+            # Synthetic-neighbour IDW surface solution calculator (mirrors the
+            # volume branch).  noise_intensity=50 is hardcoded, matching the
+            # volume-side value at the sibling construction below.  See
+            # physicsnemo/checklist.md §1.2 for the port rationale.
             self.solution_calculator_surf = SolutionCalculatorSurface(
                 num_variables=self.num_variables_surf,
                 num_sample_points=self.num_sample_points_surface,
-                use_surface_normals=self.use_surface_normals,
-                use_surface_area=self.use_surface_area,
+                noise_intensity=50,
                 encode_parameters=self.encode_parameters,
                 parameter_model=self.parameter_model
                 if self.encode_parameters
@@ -456,6 +458,23 @@ class DoMINO(Module):
                 aggregation_model=self.agg_model_surf,
                 nn_basis=self.nn_basis_surf,
             )
+            # -----------------------------------------------------------------
+            # Legacy construction (precomputed-kNN IDW smoother).  Retired
+            # 2026-04-23 per checklist §1.2; kept as a block comment only.
+            # -----------------------------------------------------------------
+            # self.solution_calculator_surf = SolutionCalculatorSurface(
+            #     num_variables=self.num_variables_surf,
+            #     num_sample_points=self.num_sample_points_surface,
+            #     use_surface_normals=self.use_surface_normals,
+            #     use_surface_area=self.use_surface_area,
+            #     encode_parameters=self.encode_parameters,
+            #     parameter_model=self.parameter_model
+            #     if self.encode_parameters
+            #     else None,
+            #     aggregation_model=self.agg_model_surf,
+            #     nn_basis=self.nn_basis_surf,
+            # )
+            # -----------------------------------------------------------------
 
         # Aggregation model for volume
         if self.output_features_vol is not None:
@@ -538,17 +557,19 @@ class DoMINO(Module):
                     ]
                 )
             if self.output_features_surf is not None:
+                # Retired kNN keys ("surface_mesh_neighbors",
+                # "surface_neighbors_normals", "surface_neighbors_areas") no
+                # longer required -- neighbours are synthesised inside
+                # SolutionCalculatorSurface.  See checklist §1.2.
                 required_keys.extend(
                     [
                         "pos_surface_center_of_mass",
                         "surface_mesh_centers",
-                        "surface_mesh_neighbors",
                         "surface_normals",
-                        "surface_neighbors_normals",
-                        "surface_areas",
-                        "surface_neighbors_areas",
                     ]
                 )
+                if self.use_surface_area:
+                    required_keys.append("surface_areas")
 
             missing_keys = [k for k in required_keys if k not in data_dict]
             if missing_keys:
@@ -670,36 +691,54 @@ class DoMINO(Module):
             output_vol = None
 
         if self.output_features_surf is not None:
-            # Load surface mesh data
+            # Load surface mesh data.  ``surface_normals`` is retained in the
+            # input contract for downstream users (loss reductions,
+            # diagnostics) even though the new synthetic-neighbour solution
+            # calculator ignores it.  ``surface_areas`` is gated on
+            # ``use_surface_area`` so callers that opt out (e.g. point-
+            # centered HLPW surface) are not forced to synthesise a dummy.
             surface_mesh_centers = data_dict["surface_mesh_centers"]
-            surface_normals = data_dict["surface_normals"]
-            surface_areas = data_dict["surface_areas"]
+            surface_normals = data_dict["surface_normals"]  # noqa: F841
+            if self.use_surface_area:
+                surface_areas = data_dict["surface_areas"]  # noqa: F841
 
-            # Neighbors of sampled points on surface
-            surface_mesh_neighbors = data_dict["surface_mesh_neighbors"]
-            surface_neighbors_normals = data_dict["surface_neighbors_normals"]
-            surface_neighbors_areas = data_dict["surface_neighbors_areas"]
-            surface_areas = torch.unsqueeze(surface_areas, -1)
-            surface_neighbors_areas = torch.unsqueeze(surface_neighbors_areas, -1)
+            # Retired: precomputed kNN neighbour pulls.  See checklist §1.2.
+            # surface_mesh_neighbors      = data_dict["surface_mesh_neighbors"]
+            # surface_neighbors_normals   = data_dict["surface_neighbors_normals"]
+            # surface_neighbors_areas     = data_dict["surface_neighbors_areas"]
+            # surface_areas               = torch.unsqueeze(surface_areas, -1)
+            # surface_neighbors_areas     = torch.unsqueeze(surface_neighbors_areas, -1)
 
-            # Calculate local geometry encoding for surface
+            # Calculate local geometry encoding for surface (uses only the
+            # fixed latent grid, no kNN dependency).
             encoding_g_surf = self.surface_local_geo_encodings(
                 0.5 * encoding_g_surf, surface_mesh_centers, s_grid
             )
 
-            # Approximate solution on surface cell centers
+            # Approximate solution on surface cell centres via the synthetic
+            # ball-sampling IDW pattern (mirrors the volume branch).
             output_surf = self.solution_calculator_surf(
                 surface_mesh_centers,
                 encoding_g_surf,
                 encoding_node_surf,
-                surface_mesh_neighbors,
-                surface_normals,
-                surface_neighbors_normals,
-                surface_areas,
-                surface_neighbors_areas,
                 global_params_values,
                 global_params_reference,
             )
+            # -----------------------------------------------------------------
+            # Legacy call signature (precomputed-kNN IDW).  Retired per §1.2.
+            # -----------------------------------------------------------------
+            # output_surf = self.solution_calculator_surf(
+            #     surface_mesh_centers,
+            #     encoding_g_surf,
+            #     encoding_node_surf,
+            #     surface_mesh_neighbors,
+            #     surface_normals,
+            #     surface_neighbors_normals,
+            #     surface_areas,
+            #     surface_neighbors_areas,
+            #     global_params_values,
+            #     global_params_reference,
+            # )
         else:
             output_surf = None
 

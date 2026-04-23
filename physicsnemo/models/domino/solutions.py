@@ -412,22 +412,33 @@ class SolutionCalculatorSurface(Module):
     r"""
     Module to calculate the output solution of the DoMINO Model for surface data.
 
-    This module computes field predictions at surface mesh points by combining
-    basis functions, positional encodings, geometry encodings, and optionally
-    surface normals and areas through an aggregation model.
+    Mirrors :class:`SolutionCalculatorVolume`: at each surface cell center, the
+    module synthesises ``num_sample_points`` random perturbations inside a ball
+    of radius :math:`1/\text{noise\_intensity}` (via :func:`sample_sphere`),
+    evaluates the per-variable basis MLP at the center and each perturbed
+    point, and blends the predictions as 0.5 * center + 0.5 * inverse-distance
+    weighted mean over the synthetic perturbations.
+
+    The smoother's physical bandwidth is set by ``noise_intensity`` and is
+    therefore invariant to the data-pipeline subsample ratio
+    (``sampling_resolution`` / ``subsample_n_cells``).  The legacy path --
+    consuming precomputed kNN coordinates, normals, and areas from the
+    subsampled mesh -- produced a bandwidth that scaled with subsample density
+    and has been removed in favour of this pattern (see
+    ``physicsnemo/checklist.md`` §1.2).
 
     Parameters
     ----------
     num_variables : int
         Number of output field variables to predict.
     num_sample_points : int
-        Number of neighbor sample points to use for averaging.
+        Number of synthetic neighbour samples drawn per surface cell centre.
+        The IDW blend combines ``num_sample_points + 1`` points in total
+        (1 centre + ``num_sample_points`` synthetic perturbations).
+    noise_intensity : float
+        Controls the synthetic-sampling radius as :math:`1/\text{noise\_intensity}`.
     encode_parameters : bool
         Whether to include parameter encoding in the aggregation.
-    use_surface_normals : bool
-        Whether to include surface normals in the basis function input.
-    use_surface_area : bool
-        Whether to include surface areas in the basis function input.
     parameter_model : nn.Module | None
         The parameter encoding model (required if ``encode_parameters=True``).
     aggregation_model : nn.ModuleList
@@ -443,16 +454,6 @@ class SolutionCalculatorSurface(Module):
         Geometry encoding of shape :math:`(B, N_{surf}, D_{geo})`.
     encoding_node : torch.Tensor
         Node positional encoding of shape :math:`(B, N_{surf}, D_{pos})`.
-    surface_mesh_neighbors : torch.Tensor
-        Surface mesh neighbor coordinates of shape :math:`(B, N_{surf}, K, 3)`.
-    surface_normals : torch.Tensor
-        Surface normals of shape :math:`(B, N_{surf}, 3)`.
-    surface_neighbors_normals : torch.Tensor
-        Surface neighbor normals of shape :math:`(B, N_{surf}, K, 3)`.
-    surface_areas : torch.Tensor
-        Surface cell areas of shape :math:`(B, N_{surf}, 1)`.
-    surface_neighbors_areas : torch.Tensor
-        Surface neighbor areas of shape :math:`(B, N_{surf}, K, 1)`.
     global_params_values : torch.Tensor
         Global parameter values of shape :math:`(B, N_{params}, 1)`.
     global_params_reference : torch.Tensor
@@ -466,16 +467,15 @@ class SolutionCalculatorSurface(Module):
     See Also
     --------
     :class:`~physicsnemo.models.domino.mlps.AggregationModel` : Used for final prediction.
-    :class:`SolutionCalculatorVolume` : Similar module for volume data.
+    :class:`SolutionCalculatorVolume` : Sibling module for volume data.
     """
 
     def __init__(
         self,
         num_variables: int,
         num_sample_points: int,
+        noise_intensity: float,
         encode_parameters: bool,
-        use_surface_normals: bool,
-        use_surface_area: bool,
         parameter_model: nn.Module | None,
         aggregation_model: nn.ModuleList,
         nn_basis: nn.ModuleList,
@@ -483,9 +483,8 @@ class SolutionCalculatorSurface(Module):
         super().__init__(meta=None)
         self.num_variables = num_variables
         self.num_sample_points = num_sample_points
+        self.noise_intensity = noise_intensity
         self.encode_parameters = encode_parameters
-        self.use_surface_normals = use_surface_normals
-        self.use_surface_area = use_surface_area
         self.parameter_model = parameter_model
         self.aggregation_model = aggregation_model
         self.nn_basis = nn_basis
@@ -501,18 +500,11 @@ class SolutionCalculatorSurface(Module):
         surface_mesh_centers: Float[torch.Tensor, "batch num_surf 3"],
         encoding_g: Float[torch.Tensor, "batch num_surf geo_features"],
         encoding_node: Float[torch.Tensor, "batch num_surf pos_features"],
-        surface_mesh_neighbors: Float[torch.Tensor, "batch num_surf num_neighbors 3"],
-        surface_normals: Float[torch.Tensor, "batch num_surf 3"],
-        surface_neighbors_normals: Float[
-            torch.Tensor, "batch num_surf num_neighbors 3"
-        ],
-        surface_areas: Float[torch.Tensor, "batch num_surf 1"],
-        surface_neighbors_areas: Float[torch.Tensor, "batch num_surf num_neighbors 1"],
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
     ) -> Float[torch.Tensor, "batch num_surf num_vars"]:
         r"""
-        Function to approximate solution given the neighborhood information.
+        Approximate the surface solution via synthetic-neighbour IDW aggregation.
 
         Parameters
         ----------
@@ -522,16 +514,6 @@ class SolutionCalculatorSurface(Module):
             Geometry encoding of shape :math:`(B, N_{surf}, D_{geo})`.
         encoding_node : torch.Tensor
             Node positional encoding of shape :math:`(B, N_{surf}, D_{pos})`.
-        surface_mesh_neighbors : torch.Tensor
-            Surface mesh neighbor coordinates of shape :math:`(B, N_{surf}, K, 3)`.
-        surface_normals : torch.Tensor
-            Surface normals of shape :math:`(B, N_{surf}, 3)`.
-        surface_neighbors_normals : torch.Tensor
-            Surface neighbor normals of shape :math:`(B, N_{surf}, K, 3)`.
-        surface_areas : torch.Tensor
-            Surface cell areas of shape :math:`(B, N_{surf}, 1)`.
-        surface_neighbors_areas : torch.Tensor
-            Surface neighbor areas of shape :math:`(B, N_{surf}, K, 1)`.
         global_params_values : torch.Tensor
             Global parameter values of shape :math:`(B, N_{params}, 1)`.
         global_params_reference : torch.Tensor
@@ -559,14 +541,6 @@ class SolutionCalculatorSurface(Module):
                     f"Expected encoding_node to be 3D (B, N, D), "
                     f"got {encoding_node.ndim}D with shape {tuple(encoding_node.shape)}"
                 )
-            if (
-                surface_mesh_neighbors.ndim != 4
-                or surface_mesh_neighbors.shape[-1] != 3
-            ):
-                raise ValueError(
-                    f"Expected surface_mesh_neighbors of shape (B, N, K, 3), "
-                    f"got shape {tuple(surface_mesh_neighbors.shape)}"
-                )
 
         # Compute parameter encoding if enabled
         if self.encode_parameters:
@@ -575,49 +549,38 @@ class SolutionCalculatorSurface(Module):
             )
             param_encoding = self.parameter_model(param_encoding)
 
-        # Build input features for centers
-        centers_inputs = [
-            surface_mesh_centers,
-        ]
-        neighbors_inputs = [
-            surface_mesh_neighbors,
-        ]
+        # Initialise perturbed centres with the original centres at p=0.
+        surface_m_c_perturbed = [surface_mesh_centers.unsqueeze(2)]
 
-        # Optionally add surface normals
-        if self.use_surface_normals:
-            centers_inputs.append(surface_normals)
-            if self.num_sample_points > 1:
-                neighbors_inputs.append(surface_neighbors_normals)
+        # Synthesise K neighbour samples inside a fixed-radius ball.  Radius is
+        # a model hyperparameter (1/noise_intensity); the smoother's bandwidth
+        # is therefore invariant to subsample density.
+        surface_m_c_sample = sample_sphere(
+            surface_mesh_centers, 1 / self.noise_intensity, self.num_sample_points
+        )
+        for i in range(self.num_sample_points):
+            surface_m_c_perturbed.append(surface_m_c_sample[:, :, i : i + 1, :])
 
-        # Optionally add surface areas (log-scaled for numerical stability)
-        if self.use_surface_area:
-            centers_inputs.append(torch.log(surface_areas) / 10)
-            if self.num_sample_points > 1:
-                neighbors_inputs.append(torch.log(surface_neighbors_areas) / 10)
-
-        # Concatenate all input features
-        surface_mesh_centers = torch.cat(centers_inputs, dim=-1)
-        surface_mesh_neighbors = torch.cat(neighbors_inputs, dim=-1)
+        surface_m_c_perturbed = torch.cat(surface_m_c_perturbed, dim=2)
 
         # Compute predictions for each variable
         for f in range(self.num_variables):
-            for p in range(self.num_sample_points):
-                if p == 0:
-                    # Use center point
-                    volume_m_c = surface_mesh_centers
-                else:
-                    # Use neighbor points with small offset for numerical stability
-                    volume_m_c = surface_mesh_neighbors[:, :, p - 1] + 1e-6
-                    noise = surface_mesh_centers - volume_m_c
-                    dist = torch.norm(noise, dim=-1, keepdim=True)
+            for p in range(surface_m_c_perturbed.shape[2]):
+                surface_m_c = surface_m_c_perturbed[:, :, p, :]
+
+                # Compute distance for neighbour weighting (skip for centre).
+                if p != 0:
+                    dist = torch.norm(
+                        surface_m_c - surface_mesh_centers, dim=-1, keepdim=True
+                    )
 
                 # Compute basis functions and aggregate features
-                basis_f = self.nn_basis[f](volume_m_c)
+                basis_f = self.nn_basis[f](surface_m_c)
                 output = torch.cat((basis_f, encoding_node, encoding_g), dim=-1)
                 if self.encode_parameters:
                     output = torch.cat((output, param_encoding), dim=-1)
 
-                # Apply aggregation model with inverse distance weighting
+                # Apply aggregation model with inverse-distance weighting
                 if p == 0:
                     output_center = self.aggregation_model[f](output)
                 else:
@@ -632,7 +595,7 @@ class SolutionCalculatorSurface(Module):
                         )
                         dist_sum += 1.0 / dist
 
-            # Combine center prediction with neighbor-averaged prediction
+            # Combine centre prediction with neighbour-averaged prediction
             if self.num_sample_points > 1:
                 output_res = 0.5 * output_center + 0.5 * output_neighbor / dist_sum
             else:
@@ -645,3 +608,121 @@ class SolutionCalculatorSurface(Module):
                 output_all = torch.cat((output_all, output_res), dim=-1)
 
         return output_all
+
+
+# =============================================================================
+# Deprecated: legacy SolutionCalculatorSurface (precomputed-kNN IDW smoother).
+# =============================================================================
+# Replaced 2026-04-23 per physicsnemo/checklist.md §1.2.  The kNN path took
+# precomputed neighbours from the already-subsampled mesh, so the smoother's
+# radius scaled with sampling_resolution; the replacement mirrors
+# SolutionCalculatorVolume's synthetic-ball pattern, whose radius is a fixed
+# model hyperparameter.  Kept as a block comment for reference -- do NOT
+# uncomment without re-opening §1.2.
+# -----------------------------------------------------------------------------
+#     def __init__(
+#         self,
+#         num_variables: int,
+#         num_sample_points: int,
+#         encode_parameters: bool,
+#         use_surface_normals: bool,
+#         use_surface_area: bool,
+#         parameter_model: nn.Module | None,
+#         aggregation_model: nn.ModuleList,
+#         nn_basis: nn.ModuleList,
+#     ):
+#         super().__init__(meta=None)
+#         self.num_variables = num_variables
+#         self.num_sample_points = num_sample_points
+#         self.encode_parameters = encode_parameters
+#         self.use_surface_normals = use_surface_normals
+#         self.use_surface_area = use_surface_area
+#         self.parameter_model = parameter_model
+#         self.aggregation_model = aggregation_model
+#         self.nn_basis = nn_basis
+#
+#         if self.encode_parameters:
+#             if self.parameter_model is None:
+#                 raise ValueError(
+#                     "Parameter model is required when encode_parameters is True"
+#                 )
+#
+#     def forward(
+#         self,
+#         surface_mesh_centers: Float[torch.Tensor, "batch num_surf 3"],
+#         encoding_g: Float[torch.Tensor, "batch num_surf geo_features"],
+#         encoding_node: Float[torch.Tensor, "batch num_surf pos_features"],
+#         surface_mesh_neighbors: Float[torch.Tensor, "batch num_surf num_neighbors 3"],
+#         surface_normals: Float[torch.Tensor, "batch num_surf 3"],
+#         surface_neighbors_normals: Float[
+#             torch.Tensor, "batch num_surf num_neighbors 3"
+#         ],
+#         surface_areas: Float[torch.Tensor, "batch num_surf 1"],
+#         surface_neighbors_areas: Float[torch.Tensor, "batch num_surf num_neighbors 1"],
+#         global_params_values: Float[torch.Tensor, "batch num_params 1"],
+#         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
+#     ) -> Float[torch.Tensor, "batch num_surf num_vars"]:
+#         # Input validation
+#         if not torch.compiler.is_compiling():
+#             if surface_mesh_centers.ndim != 3 or surface_mesh_centers.shape[-1] != 3:
+#                 raise ValueError(...)
+#             if encoding_g.ndim != 3:
+#                 raise ValueError(...)
+#             if encoding_node.ndim != 3:
+#                 raise ValueError(...)
+#             if (
+#                 surface_mesh_neighbors.ndim != 4
+#                 or surface_mesh_neighbors.shape[-1] != 3
+#             ):
+#                 raise ValueError(...)
+#
+#         if self.encode_parameters:
+#             param_encoding = apply_parameter_encoding(
+#                 surface_mesh_centers, global_params_values, global_params_reference
+#             )
+#             param_encoding = self.parameter_model(param_encoding)
+#
+#         centers_inputs = [surface_mesh_centers]
+#         neighbors_inputs = [surface_mesh_neighbors]
+#         if self.use_surface_normals:
+#             centers_inputs.append(surface_normals)
+#             if self.num_sample_points > 1:
+#                 neighbors_inputs.append(surface_neighbors_normals)
+#         if self.use_surface_area:
+#             centers_inputs.append(torch.log(surface_areas) / 10)
+#             if self.num_sample_points > 1:
+#                 neighbors_inputs.append(torch.log(surface_neighbors_areas) / 10)
+#         surface_mesh_centers = torch.cat(centers_inputs, dim=-1)
+#         surface_mesh_neighbors = torch.cat(neighbors_inputs, dim=-1)
+#
+#         for f in range(self.num_variables):
+#             for p in range(self.num_sample_points):
+#                 if p == 0:
+#                     volume_m_c = surface_mesh_centers
+#                 else:
+#                     volume_m_c = surface_mesh_neighbors[:, :, p - 1] + 1e-6
+#                     noise = surface_mesh_centers - volume_m_c
+#                     dist = torch.norm(noise, dim=-1, keepdim=True)
+#                 basis_f = self.nn_basis[f](volume_m_c)
+#                 output = torch.cat((basis_f, encoding_node, encoding_g), dim=-1)
+#                 if self.encode_parameters:
+#                     output = torch.cat((output, param_encoding), dim=-1)
+#                 if p == 0:
+#                     output_center = self.aggregation_model[f](output)
+#                 else:
+#                     if p == 1:
+#                         output_neighbor = self.aggregation_model[f](output) * (1.0 / dist)
+#                         dist_sum = 1.0 / dist
+#                     else:
+#                         output_neighbor += self.aggregation_model[f](output) * (1.0 / dist)
+#                         dist_sum += 1.0 / dist
+#             if self.num_sample_points > 1:
+#                 output_res = 0.5 * output_center + 0.5 * output_neighbor / dist_sum
+#             else:
+#                 output_res = output_center
+#             if f == 0:
+#                 output_all = output_res
+#             else:
+#                 output_all = torch.cat((output_all, output_res), dim=-1)
+#         return output_all
+# =============================================================================
