@@ -707,7 +707,7 @@ class MinMaxNormalizeMeshFields(MeshTransform):
     Example YAML (inline)::
 
         - _target_: ${dp:MinMaxNormalizeMeshFields}
-          section: point_data
+          association: point_data
           fields:
             pressure: {type: scalar, min: -1.2, max: 0.5}
             tau_wall: {type: vector, min: [-0.01, -0.01, -0.01],
@@ -716,19 +716,27 @@ class MinMaxNormalizeMeshFields(MeshTransform):
     Example YAML (from .pt file)::
 
         - _target_: ${dp:MinMaxNormalizeMeshFields}
-          section: point_data
+          association: point_data
           stats_file: /path/to/minmax_stats.pt
     """
 
     def __init__(
         self,
-        section: str = "point_data",
+        association: MeshFieldAssociation = "point_data",
         fields: dict[str, dict] | None = None,
         stats_file: str | None = None,
         eps: float = 1e-8,
+        section: MeshFieldAssociation | None = None,
     ) -> None:
         super().__init__()
-        self._section = section
+        if section is not None:
+            association = section
+        if association not in MESH_FIELD_ASSOCIATIONS:
+            raise ValueError(
+                f"association must be one of {MESH_FIELD_ASSOCIATIONS!r}, "
+                f"got {association!r}"
+            )
+        self._association = association
         self._eps = eps
 
         if stats_file is not None:
@@ -747,8 +755,7 @@ class MinMaxNormalizeMeshFields(MeshTransform):
             raise ValueError("Provide one of 'stats_file' or 'fields'")
 
     def __call__(self, mesh: Mesh) -> Mesh:
-        td = _get_mesh_section(mesh, self._section)
-        new_td = td.clone()
+        new_td = getattr(mesh, self._association).clone()
 
         for field_name, stats in self._stats.items():
             if field_name not in new_td.keys():
@@ -765,7 +772,7 @@ class MinMaxNormalizeMeshFields(MeshTransform):
             "cell_data": mesh.cell_data,
             "global_data": mesh.global_data,
         }
-        kwargs[self._section] = new_td
+        kwargs[self._association] = new_td
         return Mesh(**kwargs)
 
     def inverse_tensor(
@@ -802,7 +809,7 @@ class MinMaxNormalizeMeshFields(MeshTransform):
         parts = []
         for name, s in self._stats.items():
             parts.append(f"{name}({s['type']}): min={s['min']}, max={s['max']}")
-        return f"section={self._section}, " + ", ".join(parts)
+        return f"association={self._association}, " + ", ".join(parts)
 
 
 @register()

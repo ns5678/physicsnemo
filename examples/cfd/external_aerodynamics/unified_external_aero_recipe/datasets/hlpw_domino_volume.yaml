@@ -25,7 +25,7 @@
 
 name: hlpw_domino_volume
 
-train_datadir: /lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+train_datadir: ${dataset_paths.hlpw_domino}
 
 metadata:
   U_inf: [2672.95, 0.0, 186.92]
@@ -94,7 +94,7 @@ pipeline:
       fields:
         avg(P): pressure
         avg(u): velocity
-      section: point_data
+      association: point_data
 
     - _target_: ${dp:RenameMeshFields}
       point_data:
@@ -105,7 +105,7 @@ pipeline:
     #    --with-transforms`` instructions in the surface YAML; placeholder
     #    mean/std kept inline until the .pt is generated.
     - _target_: ${dp:NormalizeMeshFields}
-      section: point_data
+      association: point_data
       fields:
         pressure: {type: scalar, mean: 0.0, std: 0.2}
         velocity: {type: vector, mean: [1.0, 0.0, 0.07], std: 0.2}
@@ -206,26 +206,9 @@ pipeline:
       boundary_name: stl_geometry
       n_points: 200000
 
-    # 11) Terminal.
-    - _target_: ${dp:MeshToTensorDict}
-    - _target_: ${dp:RestructureTensorDict}
-      groups:
-        input:
-          geometry_coordinates: boundaries.stl_geometry.points
-          grid: global_data.grid
-          sdf_grid: global_data.sdf_grid
-          surf_grid: global_data.surf_grid
-          sdf_surf_grid: global_data.sdf_surf_grid
-          volume_mesh_centers: interior.points
-          sdf_nodes: interior.point_data.sdf
-          pos_volume_closest: interior.point_data.pos_volume_closest
-          pos_volume_center_of_mass: interior.point_data.pos_volume_center_of_mass
-          global_params_values: global_data.global_params_values
-          global_params_reference: global_data.global_params_reference
-          volume_min_max: global_data.volume_min_max
-        output:
-          pressure: interior.point_data.pressure
-          velocity: interior.point_data.velocity
+    # 11) Keep the DomainMesh output. The model config maps these paths into
+    # DoMINO's data_dict, and the trainer extracts targets from
+    # interior.point_data.
 
 targets:
   pressure: scalar

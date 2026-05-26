@@ -4,7 +4,7 @@
 Reads the HLPW boundary fields from the .pdmsh file, applies the same
 non-dimensionalization formulas that ``NonDimensionalizeByMetadata``
 would apply (driven by the freestream metadata hardcoded in
-``conf/dataset/hlpw_domino_surface.yaml``), and writes a
+``datasets/hlpw_domino_surface.yaml``), and writes a
 ``.pt`` file suitable for ``MinMaxNormalizeMeshFields.stats_file``.
 
 Stats schema matches ``physicsnemo.datapipes.transforms.mesh.transforms.MinMaxNormalizeMeshFields``::
@@ -38,7 +38,7 @@ Usage:
         --dataset-root /path/to/PhysicsNeMo-HighLiftAeroML \
         --manifest     /path/to/PhysicsNeMo-HighLiftAeroML/manifest.json \
         --split        single_aoa_4_train \
-        --out-path     stats/hlpw_domino_surface_single_aoa_4.pt
+        --out-path     stats/hlpw_domino_surface.pt
 
 Omit --manifest and --split to use every domain_*.pdmsh under --dataset-root.
 """
@@ -55,7 +55,7 @@ import torch
 from physicsnemo.mesh import DomainMesh
 
 
-# -- HLPW metadata (matches conf/dataset/hlpw_domino_surface.yaml metadata block) ---
+# -- HLPW metadata (matches datasets/hlpw_domino_surface.yaml metadata block) ---
 U_INF = [2672.95, 0.0, 186.92]   # freestream velocity, in/s
 P_INF = 176.352                   # freestream pressure, slug/(in*s^2)
 RHO_INF = 1.3756e-6               # freestream density, slug/in^3

@@ -21,6 +21,7 @@ from __future__ import annotations
 import random
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -87,6 +88,12 @@ def build_muon_optimizer(
     other_params = [p for p in base_model.parameters() if p.ndim != 2]
 
     opt_cfg = cfg.training.optimizer
+    if "_target_" in opt_cfg:
+        optimizer = hydra.utils.instantiate(opt_cfg, params=model.parameters())
+        if compile_optimizer:
+            optimizer.step = torch.compile(optimizer.step)
+        return optimizer
+
     lr = opt_cfg.lr
     weight_decay = opt_cfg.get("weight_decay", 1e-4)
     betas = tuple(opt_cfg.get("betas", [0.9, 0.999]))

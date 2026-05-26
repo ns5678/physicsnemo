@@ -19,10 +19,11 @@ Here, you're able to train the following models:
 - [Transolver](https://arxiv.org/abs/2402.02366)
 - [GeoTransolver](https://arxiv.org/abs/2512.20399), optionally using the [FLARE](https://arxiv.org/abs/2508.12594) attention mechanism backend
 - [GLOBE](https://arxiv.org/abs/2511.15856)
-- DoMINO is coming shortly
+- DoMINO for HLPW surface and volume runs
 
 We currently support the following datasets:
 - DrivaerML
+- HLPW DoMINO pmsh data
 
 Support for these datasets is coming imminently, with pre-processing support from
 PhysicsNeMo-Curator:
@@ -324,8 +325,8 @@ Available models and datasets:
 
 | Group | Files |
 |---|---|
-| `model/` (`conf/model/*.yaml`) | `geotransolver_{surface,volume,volume_highlift}`, `transolver_{surface,volume}`, `flare_{surface,volume}`, `globe_{surface,volume}`, `domino_{surface,volume}` |
-| `dataset/` (`datasets/*.yaml`) | `drivaer_ml_{surface,volume}`, `highlift_{surface,volume}`, `shift_suv_{estate,fastback}_surface` |
+| `model/` (`conf/model/*.yaml`) | `geotransolver_{surface,volume,volume_highlift}`, `transolver_{surface,volume}`, `flare_{surface,volume}`, `globe_{surface,volume}`, `domino_{surface,volume}`, `domino_hlpw_{surface,volume}` |
+| `dataset/` (`datasets/*.yaml`) | `drivaer_ml_{surface,volume}`, `highlift_{surface,volume}`, `shift_suv_{estate,fastback}_surface`, `hlpw_domino_{surface,volume}` |
 
 Pick one of each on the CLI:
 
@@ -427,11 +428,13 @@ unified_external_aero_recipe/
       flare_{surface,volume}.yaml
       globe_{surface,volume}.yaml
       domino_{surface,volume}.yaml
+      domino_hlpw_{surface,volume}.yaml
   datasets/                    # one file per dataset (loaded at runtime
                                #  by load_dataset_config, NOT by Hydra)
     dataset_paths.yaml         # local disk paths (edit me)
     drivaer_ml_{surface,volume}.yaml
     highlift_{surface,volume}.yaml
+    hlpw_domino_{surface,volume}.yaml
     shift_suv_{estate,fastback}_surface.yaml
   src/
   tests/
@@ -592,7 +595,14 @@ python src/train.py model=geotransolver_surface dataset=highlift_surface \
 python src/train.py model=geotransolver_volume_highlift dataset=highlift_volume \
     compile=false training.num_epochs=200 sampling_resolution=100000
 
-# DoMINO (DRAFT, doesn't run end-to-end)
+# DoMINO HLPW
+python src/train.py model=domino_hlpw_surface dataset=hlpw_domino_surface \
+    sampling_resolution=8192
+python src/train.py model=domino_hlpw_volume dataset=hlpw_domino_volume \
+    sampling_resolution=8192
+
+# Generic DoMINO templates remain scaffolding until their datasets expose
+# DoMINO-specific grid and surface fields.
 python src/train.py model=domino_surface dataset=drivaer_ml_surface \
     compile=false training.optimizer.lr=1e-3 training.scheduler.gamma=0.5
 python src/train.py model=domino_volume dataset=drivaer_ml_volume \

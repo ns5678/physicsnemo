@@ -47,9 +47,10 @@ Transforms provided
   :func:`physicsnemo.datapipes.transforms.subsample.shuffle_array`.
   Used for STL geometry downsampling (legacy ``geom_points_sample``).
 - :class:`LiftCellCentroidsAndAreas` -- materialize cell centroids and
-  cell areas of a named boundary as explicit ``cell_data`` tensors so
-  they survive :class:`MeshToTensorDict` and can be picked up by
-  :class:`RestructureTensorDict`.
+  cell areas of a named boundary as explicit ``cell_data`` tensors.
+- :class:`PromoteBoundaryToInterior` -- expose a boundary's cell-centered
+  fields through ``interior.point_data`` so the unified trainer can extract
+  targets without a flat TensorDict projection.
 - :class:`NormalizeDomainByBBox` -- rescale every spatial tensor in a
   :class:`DomainMesh` (interior points, named boundary points, cell
   centroids, selected ``global_data`` tensors such as ``grid`` and
@@ -70,9 +71,9 @@ Design notes
   none mutates in place.  This is required for the dataset's prefetch
   cache to remain safe under multi-threaded access.
 - Fields computed here go into the mesh's ``global_data``, ``point_data``,
-  or ``cell_data`` depending on their shape.  Downstream
-  :class:`RestructureTensorDict` then picks them up into the flat dict
-  that DoMINO consumes.
+  or ``cell_data`` depending on their shape.  The recipe's declarative
+  ``forward_kwargs`` spec then maps those DomainMesh paths to the dict that
+  DoMINO consumes.
 - Tensors are kept on the same device as the input mesh; callers
   (``MeshDataset``) are responsible for device placement.
 
@@ -947,14 +948,10 @@ class LiftCellCentroidsAndAreas(MeshTransform):
     r"""Materialize cell centroids and cell areas as explicit ``cell_data`` fields.
 
     :class:`Mesh` exposes ``cell_centroids`` and ``cell_areas`` as computed
-    properties derived from ``points`` and ``cells``.  Those properties are
-    **not** serialized by :class:`MeshToTensorDict`, which only emits the
-    TensorDict sub-groups ``points``, ``cells``, ``point_data``,
-    ``cell_data``, and ``global_data``.  DoMINO's ``data_dict`` contract
-    requires the centroids and areas to be reachable via
-    :class:`RestructureTensorDict` paths like
-    ``boundaries.{name}.cell_data.cell_centroids``, so this transform lifts
-    them into explicit ``cell_data`` entries before the terminal conversion.
+    properties derived from ``points`` and ``cells``. DoMINO's ``data_dict``
+    contract requires the centroids and areas to be reachable via DomainMesh
+    paths, so this transform lifts them into explicit ``cell_data`` entries
+    before the recipe collate resolves ``forward_kwargs``.
 
     Parameters
     ----------
@@ -1025,6 +1022,101 @@ class LiftCellCentroidsAndAreas(MeshTransform):
 
 
 # --------------------------------------------------------------------------- #
+# PromoteBoundaryToInterior
+# --------------------------------------------------------------------------- #
+
+
+@register()
+class PromoteBoundaryToInterior(MeshTransform):
+    r"""Expose boundary cell data as the DomainMesh interior point cloud.
+
+    The unified recipe's trainer extracts targets from
+    ``interior.point_data``. Surface-only DoMINO predicts at surface cell
+    centers, so this transform promotes a named boundary's lifted
+    ``cell_centroids`` into ``interior.points`` and copies selected
+    ``cell_data`` fields into the new interior ``point_data``.
+
+    Args:
+        boundary_name: Boundary to promote.
+        centroids_field: Boundary ``cell_data`` key containing cell centers.
+        target_fields: Boundary ``cell_data`` keys to copy as training
+            targets under the same names.
+        copy_cell_data: Mapping of ``{dest_name: source_name}`` for
+            auxiliary DoMINO inputs to copy from boundary ``cell_data`` into
+            ``interior.point_data``.
+    """
+
+    def __init__(
+        self,
+        *,
+        boundary_name: str = "boundary",
+        centroids_field: str = "cell_centroids",
+        target_fields: Sequence[str] = (),
+        copy_cell_data: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__()
+        self.boundary_name = boundary_name
+        self.centroids_field = centroids_field
+        self.target_fields = tuple(target_fields)
+        self.copy_cell_data = dict(copy_cell_data or {})
+
+    def _promote_mesh(self, mesh: Mesh) -> Mesh:
+        if self.centroids_field not in mesh.cell_data.keys():
+            raise KeyError(
+                f"Cell-data field {self.centroids_field!r} not found on "
+                f"boundary {self.boundary_name!r}."
+            )
+
+        point_data: dict[str, torch.Tensor] = {}
+        for name in self.target_fields:
+            if name not in mesh.cell_data.keys():
+                raise KeyError(
+                    f"Target field {name!r} not found in "
+                    f"{self.boundary_name!r}.cell_data."
+                )
+            point_data[name] = mesh.cell_data[name]
+
+        for dest, source in self.copy_cell_data.items():
+            if source not in mesh.cell_data.keys():
+                raise KeyError(
+                    f"Auxiliary field {source!r} not found in "
+                    f"{self.boundary_name!r}.cell_data."
+                )
+            value = mesh.cell_data[source]
+            if value.ndim == 1:
+                value = value.unsqueeze(-1)
+            point_data[dest] = value
+
+        return Mesh(
+            points=mesh.cell_data[self.centroids_field],
+            point_data=point_data,
+            global_data=mesh.global_data,
+        )
+
+    def __call__(self, mesh: Mesh) -> Mesh:
+        return self._promote_mesh(mesh)
+
+    def apply_to_domain(self, domain: DomainMesh) -> DomainMesh:
+        if self.boundary_name not in domain.boundaries:
+            raise KeyError(
+                f"Boundary {self.boundary_name!r} not found. "
+                f"Available: {domain.boundary_names}"
+            )
+        return DomainMesh(
+            interior=self._promote_mesh(domain.boundaries[self.boundary_name]),
+            boundaries=domain.boundaries,
+            global_data=domain.global_data,
+        )
+
+    def extra_repr(self) -> str:
+        return (
+            f"boundary={self.boundary_name!r}, "
+            f"centroids_field={self.centroids_field!r}, "
+            f"target_fields={self.target_fields!r}"
+        )
+
+
+# --------------------------------------------------------------------------- #
 # NormalizeDomainByBBox
 # --------------------------------------------------------------------------- #
 
@@ -1042,8 +1134,9 @@ class NormalizeDomainByBBox(MeshTransform):
 
     Unlike :class:`NormalizeMeshFields` (which rescales *data* fields like
     pressure/velocity), this transform rescales *geometry*: point clouds,
-    cell centroids, and latent-grid coordinates.  It is typically the last
-    geometry-touching transform before :class:`MeshToTensorDict`.
+    cell centroids, and latent-grid coordinates. It is typically the last
+    geometry-touching transform before the recipe collate resolves
+    ``forward_kwargs``.
 
     The transform supports two distinct bboxes -- a ``surface_bbox`` (used
     for the surface geometry rep's ``surf_grid`` + surface boundary points)
@@ -1257,5 +1350,6 @@ __all__ = [
     "CropMeshToBBox",
     "SubsampleNamedBoundary",
     "LiftCellCentroidsAndAreas",
+    "PromoteBoundaryToInterior",
     "NormalizeDomainByBBox",
 ]

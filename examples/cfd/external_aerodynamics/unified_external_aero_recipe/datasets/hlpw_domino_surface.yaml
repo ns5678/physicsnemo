@@ -44,17 +44,15 @@
 #      vertex mean, then drop the originals.
 #   6. Non-dimensionalise + rename + min-max normalise the cell fields.
 #   7. Compute face normals (store_as=cell_data).
-#   8. Lift cell centroids and cell areas into cell_data via
-#      LiftCellCentroidsAndAreas so they survive MeshToTensorDict.
+#   8. Lift cell centroids and cell areas into cell_data.
 #   9. Grid SDF on surface + volume bboxes; point-level SDF on interior
 #      (all in the normalised frame -- see D1 fix).
 #  10. Positional encodings per cell (surface_target_section=cell_data).
 #  11. Rescale every geometry tensor into ``[-1, 1]`` using the bbox corners;
 #      emit ``surface_min_max`` / ``volume_min_max``.
 #  12. Subsample the STL to ``geom_points_sample=200_000``.
-#  13. Terminal MeshToTensorDict + RestructureTensorDict projection to the
-#      flat ``input``/``output`` dict the ``domino_hlpw_surface`` collate
-#      mapping consumes.
+#  13. Promote boundary cell centers and target fields into
+#      ``interior.point_data`` for the unified collate path.
 #
 # Contract assumption (data-prep side): every .pdmsh file has been written
 # with shuffled on-disk point and cell order.  The sampler sanity test
@@ -65,8 +63,9 @@ name: hlpw_domino_surface
 
 # Root directory containing ``<case>/domain_<case>.pdmsh`` and
 # ``<case>/<case>.stl.pmsh``.  Overridden by the training config's data
-# block; default is the HLPW AoA4 dataset on lustre fs1.
-train_datadir: /lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/HLPW-Benchmarking/data/pmsh/
+# block; defaults to the HLPW AoA4 dataset path configured in
+# datasets/dataset_paths.yaml.
+train_datadir: ${dataset_paths.hlpw_domino}
 
 # HLPW uses the slug-inch-second-Rankine unit system, matching the PR's
 # highlift_surface.yaml convention.
@@ -179,7 +178,7 @@ pipeline:
         PROJ(AVG(T)): temperature
         PROJ(AVG(P)): pressure
         AVG(TAU_WALL): stress
-      section: cell_data
+      association: cell_data
 
     # Rename to simpler keys that MinMaxNormalizeMeshFields / output/
     # paths expect.
@@ -200,17 +199,16 @@ pipeline:
     #
     # from the recipe root.  Stats schema: ``{field: {type, min, max}}``.
     - _target_: ${dp:MinMaxNormalizeMeshFields}
-      section: cell_data
-      stats_file: stats/hlpw_domino_surface_single_aoa_4.pt
+      association: cell_data
+      stats_file: stats/hlpw_domino_surface.pt
 
     # Face normals (exact per-triangle cross product) stored on cell_data.
     - _target_: ${dp:ComputeSurfaceNormals}
       store_as: cell_data
       field_name: surface_normals
 
-    # Materialize cell centroids and cell areas as explicit cell_data
-    # entries so they survive MeshToTensorDict.  Matches the legacy
-    # DoMINO ``surface_coordinates`` / ``surface_sizes`` contract.
+    # Materialize cell centroids and cell areas as explicit cell_data entries.
+    # Matches the legacy DoMINO surface_coordinates / surface_sizes contract.
     - _target_: ${dp:LiftCellCentroidsAndAreas}
       boundary_name: boundary
       centroids_field: cell_centroids
@@ -273,9 +271,7 @@ pipeline:
       compute_volume_encodings: false
       compute_surface_encodings: true
       # Cell-centered pipeline: emit one encoding per cell centroid
-      # (shape ``(N_cells, 3)``) and write it to cell_data.  Pairs with
-      # ``surface_mesh_centers: boundaries.boundary.cell_data.cell_centroids``
-      # in the RestructureTensorDict input block below.
+      # (shape ``(N_cells, 3)``) and write it to cell_data.
       surface_target_section: cell_data
       surface_bbox_min: ${bbox.surface.min}
       surface_bbox_max: ${bbox.surface.max}
@@ -313,34 +309,17 @@ pipeline:
       boundary_name: stl_geometry
       n_points: 200000
 
-    # Terminal: Mesh -> TensorDict, then project to the flat
-    # ``input/`` / ``output/`` groups that the collate layer maps into
-    # DoMINO's ``data_dict`` + ``fields`` contract.
-    - _target_: ${dp:MeshToTensorDict}
-    - _target_: ${dp:RestructureTensorDict}
-      groups:
-        input:
-          # STL-derived geometry (unnormalized point cloud; legacy parity).
-          geometry_coordinates: boundaries.stl_geometry.points
-          # Surface-frame global grids (already normalized).
-          surf_grid: global_data.surf_grid
-          sdf_surf_grid: global_data.sdf_surf_grid
-          # Surface boundary tensors on cell centroids (normalized coords):
-          # ``surface_mesh_centers`` == cell_centroids; ``surface_normals``
-          # are exact face normals; ``surface_areas`` are cell areas;
-          # ``pos_surface_center_of_mass`` has one entry per cell.
-          surface_mesh_centers: boundaries.boundary.cell_data.cell_centroids
-          surface_normals: boundaries.boundary.cell_data.surface_normals
-          surface_areas: boundaries.boundary.cell_data.cell_areas
-          pos_surface_center_of_mass: boundaries.boundary.cell_data.pos_surface_center_of_mass
-          # AoA scalar + reference and the bbox denormalization corners.
-          global_params_values: global_data.global_params_values
-          global_params_reference: global_data.global_params_reference
-          surface_min_max: global_data.surface_min_max
-        output:
-          temperature: boundaries.boundary.cell_data.temperature
-          pressure: boundaries.boundary.cell_data.pressure
-          tau_wall: boundaries.boundary.cell_data.tau_wall
+    # Terminal DomainMesh reshaping for the unified trainer. Targets must
+    # live in interior.point_data; auxiliary DoMINO surface inputs are copied
+    # there too so forward_kwargs can stay declarative.
+    - _target_: ${dp:PromoteBoundaryToInterior}
+      boundary_name: boundary
+      centroids_field: cell_centroids
+      target_fields: [temperature, pressure, tau_wall]
+      copy_cell_data:
+        surface_normals: surface_normals
+        surface_areas: cell_areas
+        pos_surface_center_of_mass: pos_surface_center_of_mass
 
 targets:
   temperature: scalar
