@@ -292,12 +292,17 @@ class DoMINO(Module):
         self.encode_parameters = model_parameters.encode_parameters
         self.geo_encoding_type = model_parameters.geometry_encoding_type
 
-        # The two-loop SolutionCalculatorSurface (solutions.py:473-610) feeds
-        # raw (B, N, 3) centres to nn_basis_surf; the legacy kNN path that
-        # concatenated [centres, normals, areas] was retired per checklist
-        # §1.2, so `use_surface_normals`/`use_surface_area` no longer affect
-        # basis input size.
-        input_features_surface = input_features
+        # The synthetic-ball SolutionCalculatorSurface (solutions.py:473-610)
+        # concatenates per-centre normals and log(area)/10 onto the perturbed
+        # coordinate before the nn_basis call when the corresponding flags
+        # are set, matching the legacy contract (see the deprecated block at
+        # solutions.py:731-742).  Size nn_basis_surf's input channel count
+        # accordingly.
+        input_features_surface = (
+            input_features
+            + (3 if self.use_surface_normals else 0)
+            + (1 if self.use_surface_area else 0)
+        )
 
         if self.encode_parameters:
             # Defining the parameter model
@@ -445,8 +450,11 @@ class DoMINO(Module):
 
             # Synthetic-neighbour IDW surface solution calculator (mirrors the
             # volume branch).  noise_intensity=50 is hardcoded, matching the
-            # volume-side value at the sibling construction below.  See
-            # physicsnemo/checklist.md §1.2 for the port rationale.
+            # volume-side value at the sibling construction below.  The
+            # use_surface_normals / use_surface_area flags re-enable the
+            # legacy contract (solutions.py:731-742) where per-centre normals
+            # and log(area)/10 concat onto the perturbed coordinate before
+            # nn_basis.
             self.solution_calculator_surf = SolutionCalculatorSurface(
                 num_variables=self.num_variables_surf,
                 num_sample_points=self.num_sample_points_surface,
@@ -457,6 +465,8 @@ class DoMINO(Module):
                 else None,
                 aggregation_model=self.agg_model_surf,
                 nn_basis=self.nn_basis_surf,
+                use_surface_normals=self.use_surface_normals,
+                use_surface_area=self.use_surface_area,
             )
             # -----------------------------------------------------------------
             # Legacy construction (precomputed-kNN IDW smoother).  Retired
@@ -691,23 +701,22 @@ class DoMINO(Module):
             output_vol = None
 
         if self.output_features_surf is not None:
-            # Load surface mesh data.  ``surface_normals`` is retained in the
-            # input contract for downstream users (loss reductions,
-            # diagnostics) even though the new synthetic-neighbour solution
-            # calculator ignores it.  ``surface_areas`` is gated on
-            # ``use_surface_area`` so callers that opt out (e.g. point-
-            # centered HLPW surface) are not forced to synthesise a dummy.
+            # Load surface mesh data.  ``surface_normals`` feeds into the
+            # nn_basis input when ``use_surface_normals`` is True; same for
+            # ``surface_areas`` under ``use_surface_area``.  Areas arrive as
+            # (B, N) from the collate and need a trailing singleton to match
+            # the (B, N, 1) contract SolutionCalculatorSurface expects.
             surface_mesh_centers = data_dict["surface_mesh_centers"]
-            surface_normals = data_dict["surface_normals"]  # noqa: F841
+            surface_normals = (
+                data_dict["surface_normals"]
+                if self.use_surface_normals
+                else None
+            )
+            surface_areas: torch.Tensor | None = None
             if self.use_surface_area:
-                surface_areas = data_dict["surface_areas"]  # noqa: F841
-
-            # Retired: precomputed kNN neighbour pulls.  See checklist §1.2.
-            # surface_mesh_neighbors      = data_dict["surface_mesh_neighbors"]
-            # surface_neighbors_normals   = data_dict["surface_neighbors_normals"]
-            # surface_neighbors_areas     = data_dict["surface_neighbors_areas"]
-            # surface_areas               = torch.unsqueeze(surface_areas, -1)
-            # surface_neighbors_areas     = torch.unsqueeze(surface_neighbors_areas, -1)
+                surface_areas = data_dict["surface_areas"]
+                if surface_areas.ndim == 2:
+                    surface_areas = surface_areas.unsqueeze(-1)
 
             # Calculate local geometry encoding for surface (uses only the
             # fixed latent grid, no kNN dependency).
@@ -723,6 +732,8 @@ class DoMINO(Module):
                 encoding_node_surf,
                 global_params_values,
                 global_params_reference,
+                surface_normals=surface_normals,
+                surface_areas=surface_areas,
             )
             # -----------------------------------------------------------------
             # Legacy call signature (precomputed-kNN IDW).  Retired per §1.2.

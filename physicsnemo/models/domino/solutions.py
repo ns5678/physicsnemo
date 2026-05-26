@@ -479,6 +479,8 @@ class SolutionCalculatorSurface(Module):
         parameter_model: nn.Module | None,
         aggregation_model: nn.ModuleList,
         nn_basis: nn.ModuleList,
+        use_surface_normals: bool = False,
+        use_surface_area: bool = False,
     ):
         super().__init__(meta=None)
         self.num_variables = num_variables
@@ -488,6 +490,8 @@ class SolutionCalculatorSurface(Module):
         self.parameter_model = parameter_model
         self.aggregation_model = aggregation_model
         self.nn_basis = nn_basis
+        self.use_surface_normals = bool(use_surface_normals)
+        self.use_surface_area = bool(use_surface_area)
 
         if self.encode_parameters:
             if self.parameter_model is None:
@@ -502,6 +506,8 @@ class SolutionCalculatorSurface(Module):
         encoding_node: Float[torch.Tensor, "batch num_surf pos_features"],
         global_params_values: Float[torch.Tensor, "batch num_params 1"],
         global_params_reference: Float[torch.Tensor, "batch num_params 1"],
+        surface_normals: Float[torch.Tensor, "batch num_surf 3"] | None = None,
+        surface_areas: Float[torch.Tensor, "batch num_surf 1"] | None = None,
     ) -> Float[torch.Tensor, "batch num_surf num_vars"]:
         r"""
         Approximate the surface solution via synthetic-neighbour IDW aggregation.
@@ -518,6 +524,15 @@ class SolutionCalculatorSurface(Module):
             Global parameter values of shape :math:`(B, N_{params}, 1)`.
         global_params_reference : torch.Tensor
             Global parameter reference values of shape :math:`(B, N_{params}, 1)`.
+        surface_normals : torch.Tensor or None
+            Per-centre unit surface normals of shape :math:`(B, N_{surf}, 3)`.
+            Required when ``use_surface_normals=True``; concatenated with the
+            perturbed coordinate before the ``nn_basis`` call.
+        surface_areas : torch.Tensor or None
+            Per-centre surface areas of shape :math:`(B, N_{surf}, 1)`.
+            Required when ``use_surface_area=True``.  Enters the basis input
+            as :math:`\log(\mathrm{area}) / 10`, matching legacy
+            ``domino_datapipe`` conventions.
 
         Returns
         -------
@@ -541,6 +556,26 @@ class SolutionCalculatorSurface(Module):
                     f"Expected encoding_node to be 3D (B, N, D), "
                     f"got {encoding_node.ndim}D with shape {tuple(encoding_node.shape)}"
                 )
+            if self.use_surface_normals and surface_normals is None:
+                raise ValueError(
+                    "use_surface_normals=True but surface_normals was not passed"
+                )
+            if self.use_surface_area and surface_areas is None:
+                raise ValueError(
+                    "use_surface_area=True but surface_areas was not passed"
+                )
+
+        # Build the extra per-centre features that augment the nn_basis input.
+        # These are invariant to ball-sample perturbation: the perturbed
+        # coordinate changes per p, but the normal and area at the real cell
+        # centre stay put.
+        extra_centre_feats = []
+        if self.use_surface_normals:
+            extra_centre_feats.append(surface_normals)
+        if self.use_surface_area:
+            # Guard against zero-area cells: clamp before log for numerical
+            # stability.  The 1/10 divisor matches legacy normalisation.
+            extra_centre_feats.append(torch.log(surface_areas.clamp(min=1e-12)) / 10.0)
 
         # Compute parameter encoding if enabled
         if self.encode_parameters:
@@ -574,8 +609,19 @@ class SolutionCalculatorSurface(Module):
                         surface_m_c - surface_mesh_centers, dim=-1, keepdim=True
                     )
 
-                # Compute basis functions and aggregate features
-                basis_f = self.nn_basis[f](surface_m_c)
+                # Compute basis functions and aggregate features.  Legacy
+                # ``SolutionCalculatorSurface`` concatenated per-centre
+                # normals and log(area)/10 to the coordinate before the
+                # nn_basis call (solutions.py legacy block, L685-706).  The
+                # synthetic-ball path preserves that contract when the
+                # corresponding flags are set.
+                if extra_centre_feats:
+                    basis_input = torch.cat(
+                        [surface_m_c, *extra_centre_feats], dim=-1
+                    )
+                else:
+                    basis_input = surface_m_c
+                basis_f = self.nn_basis[f](basis_input)
                 output = torch.cat((basis_f, encoding_node, encoding_g), dim=-1)
                 if self.encode_parameters:
                     output = torch.cat((output, param_encoding), dim=-1)

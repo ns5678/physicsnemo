@@ -687,6 +687,125 @@ class NormalizeMeshFields(MeshTransform):
 
 
 @register()
+class MinMaxNormalizeMeshFields(MeshTransform):
+    r"""Rescale mesh data fields to ``[-1, 1]`` via per-field min/max.
+
+    For **scalar** fields: ``2 * (x - min) / (max - min) - 1``.
+
+    For **vector** fields each component is rescaled independently using its
+    own ``(min_i, max_i)`` pair.  This matches the legacy
+    ``scale_model_targets`` / ``unscale_model_outputs`` pair in
+    ``physicsnemo/datapipes/cae/domino_datapipe.py`` and preserves the
+    forward-inverse round-trip used by the DoMINO HLPW training loop.
+
+    Statistics may come from two sources (checked in order):
+
+    1. **stats_file** - path to a ``.pt`` file mapping field names to
+       dicts with keys ``type``, ``min``, ``max``.
+    2. **fields** - inline dict supplied directly in YAML.
+
+    Example YAML (inline)::
+
+        - _target_: ${dp:MinMaxNormalizeMeshFields}
+          section: point_data
+          fields:
+            pressure: {type: scalar, min: -1.2, max: 0.5}
+            tau_wall: {type: vector, min: [-0.01, -0.01, -0.01],
+                                     max: [ 0.03,  0.02,  0.02]}
+
+    Example YAML (from .pt file)::
+
+        - _target_: ${dp:MinMaxNormalizeMeshFields}
+          section: point_data
+          stats_file: /path/to/minmax_stats.pt
+    """
+
+    def __init__(
+        self,
+        section: str = "point_data",
+        fields: dict[str, dict] | None = None,
+        stats_file: str | None = None,
+        eps: float = 1e-8,
+    ) -> None:
+        super().__init__()
+        self._section = section
+        self._eps = eps
+
+        if stats_file is not None:
+            self._stats: dict[str, dict[str, Float[torch.Tensor, " *shape"] | str]] = (
+                torch.load(stats_file, weights_only=True)
+            )
+        elif fields is not None:
+            self._stats = {}
+            for name, cfg in fields.items():
+                self._stats[name] = {
+                    "type": cfg["type"],
+                    "min": torch.as_tensor(cfg["min"], dtype=torch.float32),
+                    "max": torch.as_tensor(cfg["max"], dtype=torch.float32),
+                }
+        else:
+            raise ValueError("Provide one of 'stats_file' or 'fields'")
+
+    def __call__(self, mesh: Mesh) -> Mesh:
+        td = _get_mesh_section(mesh, self._section)
+        new_td = td.clone()
+
+        for field_name, stats in self._stats.items():
+            if field_name not in new_td.keys():
+                continue
+            val = new_td[field_name].float()
+            lo = stats["min"].to(dtype=val.dtype, device=val.device)
+            hi = stats["max"].to(dtype=val.dtype, device=val.device)
+            new_td[field_name] = 2.0 * (val - lo) / (hi - lo + self._eps) - 1.0
+
+        kwargs: dict = {
+            "points": mesh.points,
+            "cells": mesh.cells,
+            "point_data": mesh.point_data,
+            "cell_data": mesh.cell_data,
+            "global_data": mesh.global_data,
+        }
+        kwargs[self._section] = new_td
+        return Mesh(**kwargs)
+
+    def inverse_tensor(
+        self,
+        tensor: Float[torch.Tensor, "*batch channels"],
+        target_config: dict[str, str],
+        n_spatial_dims: int = 3,
+    ) -> Float[torch.Tensor, "*batch channels"]:
+        """Un-normalize a concatenated output tensor back to physical units.
+
+        Fields present in ``target_config`` but absent from the stored
+        stats are passed through unchanged.
+        """
+        out = tensor.clone()
+        idx = 0
+        for name, ftype in target_config.items():
+            dim = 1 if ftype == "scalar" else n_spatial_dims
+            if name in self._stats:
+                stats = self._stats[name]
+                lo = stats["min"].to(dtype=tensor.dtype, device=tensor.device)
+                hi = stats["max"].to(dtype=tensor.dtype, device=tensor.device)
+                out[..., idx : idx + dim] = (
+                    (out[..., idx : idx + dim] + 1.0) * 0.5 * (hi - lo + self._eps) + lo
+                )
+            idx += dim
+        return out
+
+    @property
+    def stats(self) -> dict:
+        """Normalization statistics dict (for serialization)."""
+        return self._stats
+
+    def extra_repr(self) -> str:
+        parts = []
+        for name, s in self._stats.items():
+            parts.append(f"{name}({s['type']}): min={s['min']}, max={s['max']}")
+        return f"section={self._section}, " + ", ".join(parts)
+
+
+@register()
 class ComputeSurfaceNormals(MeshTransform):
     r"""Compute surface normal vectors and store them in point_data or cell_data.
 
@@ -784,6 +903,42 @@ def _mesh_to_tensordict(mesh: Mesh) -> TensorDict:
     if mesh.global_data.keys():
         out["global_data"] = mesh.global_data.clone()
     return TensorDict(out, batch_size=[])
+
+
+@register()
+class PointDataToCellData(MeshTransform):
+    r"""Average every ``point_data`` field into ``cell_data`` over cell vertices.
+
+    Thin ``@register()`` wrapper over :meth:`physicsnemo.mesh.Mesh.point_data_to_cell_data`
+    (``physicsnemo/mesh/mesh.py:1462``) so the method can be invoked from a
+    yaml pipeline via ``${dp:PointDataToCellData}``.  The underlying math per
+    field is ``cell_data[name] = point_data[name][cells].mean(dim=1)``.
+
+    Use this when fields are stored on vertices (e.g. VTK
+    ``PROJ(AVG(...))`` projections of originally cell-averaged CFD fields)
+    but the training contract wants them on cells.  The built-in preserves
+    ``point_data`` after the copy; drop it with :class:`DropMeshFields`
+    afterwards if memory matters.
+
+    Parameters
+    ----------
+    overwrite_keys : bool, default ``False``
+        Forwarded to the underlying method.  If ``False``, raise when a
+        ``point_data`` key collides with an existing ``cell_data`` key.
+    """
+
+    def __init__(self, overwrite_keys: bool = False) -> None:
+        super().__init__()
+        self._overwrite = bool(overwrite_keys)
+
+    def __call__(self, mesh: Mesh) -> Mesh:
+        return mesh.point_data_to_cell_data(overwrite_keys=self._overwrite)
+
+    def apply_to_domain(self, domain: DomainMesh) -> DomainMesh:
+        return domain.point_data_to_cell_data(overwrite_keys=self._overwrite)
+
+    def extra_repr(self) -> str:
+        return f"overwrite_keys={self._overwrite}"
 
 
 @register()

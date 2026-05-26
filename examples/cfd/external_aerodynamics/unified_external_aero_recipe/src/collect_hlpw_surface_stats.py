@@ -5,34 +5,49 @@ Reads the HLPW boundary fields from the .pdmsh file, applies the same
 non-dimensionalization formulas that ``NonDimensionalizeByMetadata``
 would apply (driven by the freestream metadata hardcoded in
 ``conf/dataset/hlpw_domino_surface.yaml``), and writes a
-``.pt`` file suitable for ``NormalizeMeshFields.stats_file``.
+``.pt`` file suitable for ``MinMaxNormalizeMeshFields.stats_file``.
 
-Stats schema matches ``physicsnemo.datapipes.transforms.mesh.transforms.NormalizeMeshFields``:
+Stats schema matches ``physicsnemo.datapipes.transforms.mesh.transforms.MinMaxNormalizeMeshFields``::
 
     {
         "<field_name>": {
             "type": "scalar" | "vector",
-            "mean": tensor,   # scalar for scalar fields, (D,) for vector
-            "std":  tensor,   # scalar (direction-preserving for vectors)
+            "min": tensor,   # scalar for scalar fields, (D,) for vector
+            "max": tensor,   # same shape as min
         },
         ...
     }
 
-For vector fields the std is a single scalar equal to
-``sqrt(mean((x - mean_per_component)**2))`` averaged over all
-components AND all points -- same convention as the inline vector
-stats in ``highlift_surface.yaml`` and ``drivaer_ml_surface.yaml``.
+Vector fields use per-component min/max so each component is rescaled
+independently to ``[-1, 1]``, matching the legacy
+``scale_model_targets`` / ``unscale_model_outputs`` contract in
+``physicsnemo/datapipes/cae/domino_datapipe.py``.
 
-Run on a compute node (not the login node).  Single pass over the
-one HLPW case (~139M surface points).
+Fields are averaged from vertices to cells before stats are computed,
+matching the ``PointDataToCellData`` step in the training pipeline
+(``boundary.cell_data[f][c] = boundary.point_data[f][cells[c]].mean()``).
+This keeps the stats consistent with the cell-averaged values the model
+actually sees at training time.
+
+Run on a compute node (not the login node).  Each case is a ~275M-cell
+surface (averaged from ~139M vertices); wall time scales linearly with
+the number of cases in the selected split.
 
 Usage:
-    python collect_hlpw_surface_stats.py
+    python collect_hlpw_surface_stats.py \
+        --dataset-root /path/to/PhysicsNeMo-HighLiftAeroML \
+        --manifest     /path/to/PhysicsNeMo-HighLiftAeroML/manifest.json \
+        --split        single_aoa_4_train \
+        --out-path     stats/hlpw_domino_surface_single_aoa_4.pt
+
+Omit --manifest and --split to use every domain_*.pdmsh under --dataset-root.
 """
 
 from __future__ import annotations
 
+import argparse
 import glob
+import json
 from pathlib import Path
 
 import torch
@@ -46,41 +61,77 @@ P_INF = 176.352                   # freestream pressure, slug/(in*s^2)
 RHO_INF = 1.3756e-6               # freestream density, slug/in^3
 T_INF = 518.67                    # freestream temperature, degR
 
-PMSH_GLOB = (
-    "/lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/"
-    "HLPW-Benchmarking/data/pmsh/**/domain_*.pdmsh"
-)
 
-OUT_PATH = Path(
-    "/lustre/fs1/portfolios/coreai/projects/coreai_modulus_cae/users/snidhan/"
-    "HLPW-Benchmarking/physicsnemo/examples/cfd/external_aerodynamics/"
-    "unified_external_aero_recipe/stats/hlpw_domino_surface.pt"
-)
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Collect per-field min/max stats for HLPW surface fields.",
+    )
+    p.add_argument(
+        "--dataset-root", type=Path, required=True,
+        help="Directory containing geo_LHC*_AoA_*/domain_*.pdmsh case dirs.",
+    )
+    p.add_argument(
+        "--manifest", type=Path, default=None,
+        help="Path to manifest.json. Requires --split.",
+    )
+    p.add_argument(
+        "--split", type=str, default=None,
+        help="Manifest key (e.g. single_aoa_4_train). Required with --manifest.",
+    )
+    p.add_argument(
+        "--out-path", type=Path, required=True,
+        help="Output .pt stats file. Parent dir is created if missing.",
+    )
+    args = p.parse_args()
+    if args.manifest is not None and args.split is None:
+        p.error("--split is required when --manifest is given.")
+    return args
 
 
-def scalar_stats(x: torch.Tensor) -> dict:
-    return {
-        "type": "scalar",
-        "mean": x.mean().detach().to(torch.float32),
-        "std":  x.std().detach().to(torch.float32),
-    }
+def discover_paths(
+    dataset_root: Path,
+    manifest: Path | None,
+    split: str | None,
+) -> list[str]:
+    """Return sorted .pdmsh paths under dataset_root, optionally filtered by manifest split.
 
-
-def vector_stats(x: torch.Tensor) -> dict:
-    # x: (N, D).  Per-component mean; shared scalar std =
-    # sqrt(mean((x - mean)^2)) averaged over components and points.
-    mean = x.mean(dim=0).detach().to(torch.float32)          # (D,)
-    centered = x - mean.view(1, -1)
-    std = centered.pow(2).mean().sqrt().detach().to(torch.float32)  # scalar
-    return {"type": "vector", "mean": mean, "std": std}
+    Manifest entries are matched against each path's parent directory name,
+    mirroring ``resolve_manifest_indices`` in datasets.py:336-351 so the
+    stats run sees exactly the cases the training loader will see.
+    """
+    pattern = str(dataset_root / "**" / "domain_*.pdmsh")
+    paths = sorted(glob.glob(pattern, recursive=True))
+    if not paths:
+        raise FileNotFoundError(f"No domain_*.pdmsh files under {dataset_root}")
+    if manifest is None:
+        return paths
+    with open(manifest) as f:
+        manifest_data = json.load(f)
+    if split not in manifest_data:
+        raise KeyError(
+            f"Split {split!r} not in manifest. Available: {list(manifest_data)}"
+        )
+    case_ids = set(manifest_data[split])
+    filtered = [p for p in paths if Path(p).parent.name in case_ids]
+    if not filtered:
+        raise ValueError(
+            f"No paths matched split {split!r} under {dataset_root}. "
+            f"Manifest has {len(case_ids)} cases; example: {next(iter(case_ids))}. "
+            f"Discovered example: {Path(paths[0]).parent.name}"
+        )
+    missing = case_ids - {Path(p).parent.name for p in filtered}
+    if missing:
+        print(
+            f"WARNING: {len(missing)} manifest entries not found under "
+            f"{dataset_root}. Example missing: {next(iter(missing))}"
+        )
+    return filtered
 
 
 def main() -> None:
-    paths = sorted(glob.glob(PMSH_GLOB, recursive=True))
-    if not paths:
-        raise FileNotFoundError(f"No .pdmsh under {PMSH_GLOB}")
-    if len(paths) > 1:
-        print(f"WARNING: found {len(paths)} .pdmsh files; using all of them.")
+    args = parse_args()
+    paths = discover_paths(args.dataset_root, args.manifest, args.split)
+    print(f"Selected {len(paths)} cases for stats collection.")
 
     U_inf = torch.tensor(U_INF, dtype=torch.float64)
     p_inf = torch.tensor(P_INF, dtype=torch.float64)
@@ -89,86 +140,83 @@ def main() -> None:
     q_inf = 0.5 * rho_inf * (U_inf * U_inf).sum()
     print(f"q_inf = {q_inf.item():.6g}  (freestream dynamic pressure)")
 
-    # Accumulators in fp64 for numerical stability across large N.
+    # Running min/max accumulators in fp64.  Scalar fields track 0-d
+    # min/max; vector fields track per-component min/max so each
+    # component is rescaled to [-1, 1] independently (legacy
+    # scale_model_targets behaviour).
+    inf64 = float("inf")
+    min_T = torch.full((), inf64, dtype=torch.float64)
+    max_T = torch.full((), -inf64, dtype=torch.float64)
+    min_P = torch.full((), inf64, dtype=torch.float64)
+    max_P = torch.full((), -inf64, dtype=torch.float64)
+    min_TW = torch.full((3,), inf64, dtype=torch.float64)
+    max_TW = torch.full((3,), -inf64, dtype=torch.float64)
     n_total = 0
-    sum_T = torch.zeros((), dtype=torch.float64)
-    sumsq_T = torch.zeros((), dtype=torch.float64)
-    sum_P = torch.zeros((), dtype=torch.float64)
-    sumsq_P = torch.zeros((), dtype=torch.float64)
-    sum_TW = torch.zeros(3, dtype=torch.float64)   # per-component
-    sumsq_TW = torch.zeros((), dtype=torch.float64)  # scalar: sum_{i,c} tw_ic^2
 
     for path in paths:
         print(f"\nLoading: {path}")
         d = DomainMesh.load(path)
-        pd = d.boundaries["boundary"].point_data
-        T_raw = pd["PROJ(AVG(T))"].to(torch.float64)       # (N,)
-        P_raw = pd["PROJ(AVG(P))"].to(torch.float64)       # (N,)
-        TW_raw = pd["AVG(TAU_WALL)"].to(torch.float64)     # (N, 3)
-        n = T_raw.shape[0]
+        boundary = d.boundaries["boundary"]
+        pd = boundary.point_data
+        cells = boundary.cells.to(torch.int64)              # (N_c, 3) vertex ids
+        T_pt = pd["PROJ(AVG(T))"].to(torch.float64)         # (N_p,)
+        P_pt = pd["PROJ(AVG(P))"].to(torch.float64)         # (N_p,)
+        TW_pt = pd["AVG(TAU_WALL)"].to(torch.float64)       # (N_p, 3)
+
+        # Cell-average each field via the mean over the three triangle
+        # vertices.  Matches the pipeline's PointDataToCellData step (a
+        # thin wrapper over Mesh.point_data_to_cell_data, mesh.py:1462),
+        # so the stats here reflect the fields the model actually sees at
+        # training time.
+        T_cell = T_pt[cells].mean(dim=1)                    # (N_c,)
+        P_cell = P_pt[cells].mean(dim=1)                    # (N_c,)
+        TW_cell = TW_pt[cells].mean(dim=1)                  # (N_c, 3)
+        n = T_cell.shape[0]
 
         # Apply the SAME non-dim formulas as NonDimensionalizeByMetadata:
         #   temperature: x / T_inf
         #   pressure:    (x - p_inf) / q_inf
         #   stress:      x / q_inf   (applies to tau_wall)
-        T_nd = T_raw / T_inf
-        P_nd = (P_raw - p_inf) / q_inf
-        TW_nd = TW_raw / q_inf
+        T_nd = T_cell / T_inf
+        P_nd = (P_cell - p_inf) / q_inf
+        TW_nd = TW_cell / q_inf
 
-        sum_T += T_nd.sum()
-        sumsq_T += (T_nd * T_nd).sum()
-        sum_P += P_nd.sum()
-        sumsq_P += (P_nd * P_nd).sum()
-        sum_TW += TW_nd.sum(dim=0)
-        sumsq_TW += (TW_nd * TW_nd).sum()
+        min_T = torch.minimum(min_T, T_nd.min())
+        max_T = torch.maximum(max_T, T_nd.max())
+        min_P = torch.minimum(min_P, P_nd.min())
+        max_P = torch.maximum(max_P, P_nd.max())
+        min_TW = torch.minimum(min_TW, TW_nd.amin(dim=0))
+        max_TW = torch.maximum(max_TW, TW_nd.amax(dim=0))
         n_total += n
-        print(f"  added {n:,d} points (running total: {n_total:,d})")
-
-    # Close-form mean/std from running sums (two-pass not needed: the
-    # single-case here means one file, one pass; for multi-case this
-    # still works since we accumulate sum/sumsq across files).
-    mean_T = sum_T / n_total
-    var_T = sumsq_T / n_total - mean_T * mean_T
-    std_T = var_T.clamp(min=0.0).sqrt()
-
-    mean_P = sum_P / n_total
-    var_P = sumsq_P / n_total - mean_P * mean_P
-    std_P = var_P.clamp(min=0.0).sqrt()
-
-    # Vector: per-component mean; shared scalar std.
-    mean_TW = sum_TW / n_total                    # (3,)
-    # E[|x|^2] = sumsq_TW / (n_total * 3)  (already component-flat)
-    # Var_shared = E[(x-mean)^2] averaged over components & points =
-    #   sumsq_TW / (n_total * 3) - (1/3) * ||mean_TW||^2
-    var_TW = sumsq_TW / (n_total * 3) - (mean_TW * mean_TW).sum() / 3
-    std_TW = var_TW.clamp(min=0.0).sqrt()
+        print(f"  added {n:,d} cells (running total: {n_total:,d})")
 
     stats = {
         "temperature": {
             "type": "scalar",
-            "mean": mean_T.to(torch.float32),
-            "std":  std_T.to(torch.float32),
+            "min": min_T.to(torch.float32),
+            "max": max_T.to(torch.float32),
         },
         "pressure": {
             "type": "scalar",
-            "mean": mean_P.to(torch.float32),
-            "std":  std_P.to(torch.float32),
+            "min": min_P.to(torch.float32),
+            "max": max_P.to(torch.float32),
         },
         "tau_wall": {
             "type": "vector",
-            "mean": mean_TW.to(torch.float32),
-            "std":  std_TW.to(torch.float32),
+            "min": min_TW.to(torch.float32),
+            "max": max_TW.to(torch.float32),
         },
     }
 
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(stats, OUT_PATH)
+    args.out_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(stats, args.out_path)
 
-    print(f"\n==> wrote {OUT_PATH}")
+    print(f"\n==> wrote {args.out_path}")
     print(f"    total points: {n_total:,d}")
     for k, v in stats.items():
-        mean_str = v["mean"].tolist() if v["mean"].ndim > 0 else f"{v['mean'].item():.6g}"
-        print(f"    {k:12s}  type={v['type']:6s}  mean={mean_str}  std={v['std'].item():.6g}")
+        min_str = v["min"].tolist() if v["min"].ndim > 0 else f"{v['min'].item():.6g}"
+        max_str = v["max"].tolist() if v["max"].ndim > 0 else f"{v['max'].item():.6g}"
+        print(f"    {k:12s}  type={v['type']:6s}  min={min_str}  max={max_str}")
 
 
 if __name__ == "__main__":

@@ -174,7 +174,7 @@ def _rescale_bbox(
     r"""Apply :math:`2 (x - \min) / (\max - \min) - 1` broadcasting over trailing dim 3.
 
     Matches legacy ``physicsnemo.models.domino.utils.normalize`` (git sha
-    ``d2eb6cc8``).  The ``bbox`` argument is the pair of
+    ``d2eb6cc8``). The ``bbox`` argument is the pair of
     ``(min, max)`` length-3 float tuples returned by :func:`_validate_bbox`;
     tensors are instantiated on ``x``'s device and dtype per call so the
     helper is safe to share across transforms without carrying state.
